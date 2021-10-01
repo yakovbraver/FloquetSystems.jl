@@ -10,70 +10,66 @@ using SparseArrays, Combinatorics, KrylovKit
 Return Hamiltonian
     Ĥ = ∑ Cᵢⱼ â†ᵢ âⱼ,
 where Cᵢⱼ (i ≤ j) is the (i ↔ j) tunneling strength. Only the upper triangle of Ĉ is used.
-Number of cells in the lattice is determined as max(j).
+Also, return a vector of basis states on which Ĥ is defined.
+Number of cells in the lattice is determined automatically as max(j).
 "
 function constructH(C::AbstractSparseMatrix; nbozons::Integer)
     C_rows, C_cols, C_vals = findnz(C)
     ncells = maximum(C_cols)
     H_rows, H_cols, H_vals = Int[], Int[], eltype(C_vals)[]
-    for partition in makebasis(ncells, nbozons)
-        for basis_vec in partition
-            for (i, j, c) in zip(C_rows, C_cols, C_vals) # iterate over the terms of the Hamiltonian
-                if (basis_vec[j] > 0) # check that a particle is present at site `j` so that destruction âⱼ is possible
-                    H_val = c * sqrt( (basis_vec[i]+1) * basis_vec[j] )
-                    push!(H_vals, H_val)
-                    H_col = vectoint(basis_vec, base=nbozons+1)
-                    push!(H_cols, H_col) 
-                    basis_vec[j] -= 1 
-                    basis_vec[i] += 1
-                    H_row = vectoint(basis_vec, base=nbozons+1)
-                    push!(H_rows, H_row)
-                    # place the conjugate element into the transposed position
-                    push!(H_vals, conj(H_val))
-                    push!(H_cols, H_row) 
-                    push!(H_rows, H_col)
-                end
+    index_of_state, state_at_index = makebasis(ncells, nbozons)
+    for (state, index) in index_of_state
+        for (i, j, c) in zip(C_rows, C_cols, C_vals) # iterate over the terms of the Hamiltonian
+            if (state[j] > 0) # check that a particle is present at site `j` so that destruction âⱼ is possible
+                H_val = c * sqrt( (state[i]+1) * state[j] )
+                push!(H_vals, H_val)
+                H_col = index
+                push!(H_cols, H_col)
+                bra = copy(state)
+                bra[j] -= 1 
+                bra[i] += 1
+                H_row = index_of_state[bra]
+                push!(H_rows, H_row)
+                # place the conjugate element into the transposed position
+                push!(H_vals, conj(H_val))
+                push!(H_cols, H_row) 
+                push!(H_rows, H_col)
             end
         end
     end
-    sparse(H_rows, H_cols, H_vals)
+    sparse(H_rows, H_cols, H_vals), state_at_index
 end
     
 
 """
 Generate all possible combinations of placing `nbozons` bozons to `ncells` cells.
-A vector `basis` of iterable objects is returned. Iterating over `basis[n]` yields all combinations where `n` cells are occupied.
+Return a dictionary (state => index) and a vector (index => state).
 """
 function makebasis(ncells::Integer, nbozons::Integer)
-    basis = Vector{Combinatorics.MultiSetPermutations{Vector{Int}}}()
+    index_of_state = Dict{Vector{Int}, Int}()
+    state_at_index = Vector{Vector{Int}}(undef, binomial(nbozons+ncells-1, nbozons))
+    index = 1;
     for partition in integer_partitions(nbozons)
         length(partition) > ncells && continue # Example (nbozons = 3, ncells = 2): partition = [[3,0], [2,1], [1,1,1]] -- skip [1,1,1] as impossible
         append!(partition, zeros(ncells-length(partition)))
-        push!(basis, multiset_permutations(partition, ncells))
+        for p in multiset_permutations(partition, ncells)
+            index_of_state[p] = index
+            state_at_index[index] = p
+            index += 1
+        end
     end
-    basis
-end
-
-"Return a number of base `base` constructed using the digits in `vec`"
-function vectoint(vec::Vector{<:Integer}; base::Integer)
-    num = zero(eltype(vec))
-    for val in vec
-        num = num * base + val
-    end
-    num
+    index_of_state, state_at_index
 end
 
 C = spzeros(4, 4)
 C[1, 2] = C[1, 3] = C[2, 4] = C[3, 4] = 1
-H = constructH(C, nbozons=2)
+H, index = constructH(C, nbozons=2)
 
 A = spzeros(2, 2)
 A[1, 2] = 1
-H = constructH(A, nbozons=3)
+H, index = constructH(A, nbozons=3)
 
 vals, vecs, info = eigsolve(H, 1, :SR)
 
 findall(x -> abs(x) >= 1e-3, vecs[5])
 println(vecs[5])
-
-@time makebasis(36, 4)
