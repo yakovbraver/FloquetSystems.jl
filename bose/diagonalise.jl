@@ -1,13 +1,10 @@
 # using Arpack
-
-using SparseArrays, Combinatorics
-
 # A = spzeros(4, 4)
 # A[2, 3] = 5
 # A[3, 2] = 3
 # e = eigs(A; nev=1, which=:SR)
 
-using KrylovKit
+using SparseArrays, Combinatorics, KrylovKit
 
 "
 Return Hamiltonian
@@ -49,12 +46,8 @@ A vector `basis` of iterable objects is returned. Iterating over `basis[n]` yiel
 """
 function makebasis(ncells::Integer, nbozons::Integer)
     basis = Vector{Combinatorics.MultiSetPermutations{Vector{Int}}}()
-    # iterate partitions from smallest number of occupied cells to largest,
-    # and break if we reach the number of occupied cells that exceeds the total number of cells in the lattice.
-    # This is only possible if nbozons > ncells
-    # Example (nbozons = 3, ncells = 2): partition = [[3,0], [2,1], [1,1,1]] -- break at [1,1,1]
-    for partition in Iterators.reverse(integer_partitions(nbozons))
-        length(partition) > ncells && break
+    for partition in integer_partitions(nbozons)
+        length(partition) > ncells && continue # Example (nbozons = 3, ncells = 2): partition = [[3,0], [2,1], [1,1,1]] -- skip [1,1,1] as impossible
         append!(partition, zeros(ncells-length(partition)))
         push!(basis, multiset_permutations(partition, ncells))
     end
@@ -82,3 +75,5 @@ vals, vecs, info = eigsolve(H, 1, :SR)
 
 findall(x -> abs(x) >= 1e-3, vecs[5])
 println(vecs[5])
+
+@time makebasis(36, 4)
