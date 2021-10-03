@@ -1,10 +1,4 @@
-# using Arpack
-# A = spzeros(4, 4)
-# A[2, 3] = 5
-# A[3, 2] = 3
-# e = eigs(A; nev=1, which=:SR)
-
-using SparseArrays, Combinatorics, KrylovKit
+using SparseArrays, Combinatorics
 
 import Base.show
 
@@ -26,12 +20,43 @@ function Lattice(J::AbstractSparseMatrix, nbozons::Integer)
     Lattice(J, ncells, nbozons, binomial(nbozons+ncells-1, nbozons))
 end
 
+"""
+Construct a rectangular `nrows`x`ncols` lattice with `nbozons` bozons.
+The tunneling strengths are default-initialised to 1.
+"""
+function Lattice(nrows::Integer, ncols::Integer, J::Number, nbozons::Integer)
+    sz = (ncols-1) * nrows + (nrows-1) * ncols
+    J_rows = Vector{Int}(undef, sz)
+    J_cols = Vector{Int}(undef, sz)
+    J_vals = Vector{typeof(J)}(undef, sz)
+    counter = 1
+    cell = 1
+    for row in 1:nrows, col in 1:ncols
+        if col < ncols
+            neighbour = cell + 1
+            J_rows[counter] = cell
+            J_cols[counter] = neighbour
+            J_vals[counter] = J
+            counter += 1
+        end
+        if row < nrows
+            neighbour = cell + ncols
+            J_rows[counter] = cell
+            J_cols[counter] = neighbour
+            J_vals[counter] = J
+            counter += 1
+        end
+        cell += 1
+    end
+    Lattice(sparse(J_rows, J_cols, J_vals), nbozons)
+end
+
 
 "A type representing a Bosonic Hamiltonian, Ĥ = ∑ 𝐽ᵢⱼ â†ᵢ âⱼ"
 mutable struct BoseHamiltonian{T}
     lattice::Lattice{T}
-    H::SparseMatrixCSC{T} # the Hamiltonian matrix
-    states::Vector{Vector{Int}} # all possible states as a vector (index => state)
+    H::SparseMatrixCSC{T}                 # the Hamiltonian matrix
+    basis_states::Vector{Vector{Int}}     # all basis states as a vector (index => state)
     index_of_state::Dict{Vector{Int},Int} # a dictionary (state => index)
 end
 
@@ -48,9 +73,9 @@ function constructH!(bh::BoseHamiltonian)
     J_rows, J_cols, J_vals = findnz(bh.lattice.J)
     H_rows, H_cols, H_vals = Int[], Int[], eltype(J_vals)[]
     for (state, index) in bh.index_of_state
-        for (i, j, c) in zip(J_rows, J_cols, J_vals) # iterate over the terms of the Hamiltonian
+        for (i, j, J) in zip(J_rows, J_cols, J_vals) # iterate over the terms of the Hamiltonian
             if (state[j] > 0) # check that a particle is present at site `j` so that destruction âⱼ is possible
-                H_val = c * sqrt( (state[i]+1) * state[j] )
+                H_val = J * sqrt( (state[i]+1) * state[j] )
                 push!(H_vals, H_val)
                 H_col = index
                 push!(H_cols, H_col)
@@ -71,7 +96,7 @@ end
 
 """
 Generate all possible combinations of placing the bozons in the lattice.
-Populate `bh.states` and `bh.index_of_state`.
+Populate `bh.basis_states` and `bh.index_of_state`.
 """
 function makebasis!(bh::BoseHamiltonian)
     index = 1;
@@ -81,7 +106,7 @@ function makebasis!(bh::BoseHamiltonian)
         append!(partition, zeros(nc-length(partition)))
         for p in multiset_permutations(partition, nc)
             bh.index_of_state[p] = index
-            bh.states[index] = p
+            bh.basis_states[index] = p
             index += 1
         end
     end
@@ -91,16 +116,6 @@ end
 function Base.show(io::IO, bh::BoseHamiltonian)
     H_rows, H_cols, H_vals = findnz(bh.H)
     for (i, j, val) in zip(H_rows, H_cols, H_vals) # iterate over the terms of the Hamiltonian
-        println(io, bh.states[i], " Ĥ ", bh.states[j], " = ", round(val, sigdigits=3))
+        println(io, bh.basis_states[i], " Ĥ ", bh.basis_states[j], " = ", round(val, sigdigits=3))
     end
 end
-
-J = spzeros(4, 4)
-J[1, 2] = J[1, 3] = J[2, 4] = J[3, 4] = 1
-nbozons = 2
-lattice = Lattice(J, nbozons)
-bh = BoseHamiltonian(lattice)
-
-vals, vecs, info = eigsolve(bh.H, 1, :SR)
-
-findall(x -> abs(x) >= 1e-3, vecs[1])
