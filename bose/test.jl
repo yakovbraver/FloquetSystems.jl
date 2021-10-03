@@ -1,4 +1,4 @@
-include("diagonalise.jl")
+include("hamiltonian.jl")
 
 using SparseArrays, KrylovKit
 using Plots
