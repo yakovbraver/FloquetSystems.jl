@@ -74,7 +74,11 @@ function Lattice(nrows::Integer, ncols::Integer, J::Number, nbozons::Integer, pe
 end
 
 
-"A type representing a Bosonic Hamiltonian, Ĥ = ∑ 𝐽ᵢⱼ â†ᵢ âⱼ"
+"""
+A type representing a Bosonic Hamiltonian,
+    Ĥ = − ∑ 𝐽ᵢⱼ â†ᵢ âⱼ,
+note the minus sign.
+"""
 mutable struct BoseHamiltonian{T}
     lattice::Lattice{T}
     H::SparseMatrixCSC{T}                 # the Hamiltonian matrix
@@ -98,7 +102,7 @@ function constructH!(bh::BoseHamiltonian)
     for (state, index) in bh.index_of_state
         for (i, j, J) in zip(J_rows, J_cols, J_vals) # iterate over the terms of the Hamiltonian
             if (state[j] > 0) # check that a particle is present at site `j` so that destruction âⱼ is possible
-                H_val = J * sqrt( (state[i]+1) * state[j] )
+                H_val = -J * sqrt( (state[i]+1) * state[j] )
                 push!(H_vals, H_val)
                 H_col = index
                 push!(H_cols, H_col)
@@ -135,13 +139,10 @@ function makebasis!(bh::BoseHamiltonian)
     end
 end
 
-"Print non-zero elements of the Hamiltonian `bh` in the format ⟨bra| Ĥ |ket⟩"
+"Print non-zero elements of the Hamiltonian `bh` in the format ⟨bra| Ĥ |ket⟩."
 function Base.show(io::IO, bh::BoseHamiltonian)
     H_rows, H_cols, H_vals = findnz(bh.H)
     for (i, j, val) in zip(H_rows, H_cols, H_vals) # iterate over the terms of the Hamiltonian
         println(io, bh.basis_states[i], " Ĥ ", bh.basis_states[j], " = ", round(val, sigdigits=3))
     end
 end
-
-nbozons = 1
-lattice1 = Lattice(6, 1, ComplexF64(-1), nbozons, true)
