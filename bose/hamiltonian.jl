@@ -22,31 +22,53 @@ end
 
 """
 Construct a rectangular `nrows`x`ncols` lattice with `nbozons` bozons.
-The tunneling strengths are default-initialised to 1.
+The tunneling strengths are default-initialised to `J`.
+Boundary conditions are controlled by `periodic`.
 """
-function Lattice(nrows::Integer, ncols::Integer, J::Number, nbozons::Integer)
-    sz = (ncols-1) * nrows + (nrows-1) * ncols
-    J_rows = Vector{Int}(undef, sz)
-    J_cols = Vector{Int}(undef, sz)
-    J_vals = Vector{typeof(J)}(undef, sz)
+function Lattice(nrows::Integer, ncols::Integer, J::Number, nbozons::Integer, periodic=false)
+    J_size = (ncols-1) * nrows + (nrows-1) * ncols
+    if periodic  
+        nrows > 2 && (J_size += ncols)
+        ncols > 2 && (J_size += nrows)
+    end
+    J_rows = Vector{Int}(undef, J_size)
+    J_cols = Vector{Int}(undef, J_size)
+    J_vals = Vector{typeof(J)}(undef, J_size)
     counter = 1
     cell = 1
-    for row in 1:nrows, col in 1:ncols
-        if col < ncols
+    for col in 1:ncols, row in 1:nrows # iterate in column-major order
+        if row < nrows # if there is a row below
             neighbour = cell + 1
             J_rows[counter] = cell
             J_cols[counter] = neighbour
             J_vals[counter] = J
             counter += 1
         end
-        if row < nrows
-            neighbour = cell + ncols
+        if col < ncols  # if there is a column to the right
+            neighbour = cell + nrows
             J_rows[counter] = cell
             J_cols[counter] = neighbour
             J_vals[counter] = J
             counter += 1
         end
         cell += 1
+    end
+    if periodic
+        ncols > 2 && for row in 1:nrows
+            neighbour = row + (ncols-1) * nrows
+            J_rows[counter] = row
+            J_cols[counter] = neighbour
+            J_vals[counter] = J
+            counter += 1
+        end
+        nrows > 2 && for col in 1:ncols
+            cell = (col-1)*nrows + 1
+            neighbour = cell + nrows - 1
+            J_rows[counter] = cell
+            J_cols[counter] = neighbour
+            J_vals[counter] = J
+            counter += 1
+        end
     end
     Lattice(sparse(J_rows, J_cols, J_vals), nbozons)
 end
@@ -72,6 +94,7 @@ end
 function constructH!(bh::BoseHamiltonian)
     J_rows, J_cols, J_vals = findnz(bh.lattice.J)
     H_rows, H_cols, H_vals = Int[], Int[], eltype(J_vals)[]
+    # take each basis state and find which transitions are possible
     for (state, index) in bh.index_of_state
         for (i, j, J) in zip(J_rows, J_cols, J_vals) # iterate over the terms of the Hamiltonian
             if (state[j] > 0) # check that a particle is present at site `j` so that destruction âⱼ is possible
@@ -99,7 +122,7 @@ Generate all possible combinations of placing the bozons in the lattice.
 Populate `bh.basis_states` and `bh.index_of_state`.
 """
 function makebasis!(bh::BoseHamiltonian)
-    index = 1;
+    index = 1 # unique index identifying the state
     nb, nc = bh.lattice.nbozons, bh.lattice.ncells
     for partition in integer_partitions(nb)
         length(partition) > nc && continue # Example (nbozons = 3, ncells = 2): partition = [[3,0], [2,1], [1,1,1]] -- skip [1,1,1] as impossible
@@ -119,3 +142,6 @@ function Base.show(io::IO, bh::BoseHamiltonian)
         println(io, bh.basis_states[i], " Ĥ ", bh.basis_states[j], " = ", round(val, sigdigits=3))
     end
 end
+
+nbozons = 1
+lattice1 = Lattice(6, 1, ComplexF64(-1), nbozons, true)
