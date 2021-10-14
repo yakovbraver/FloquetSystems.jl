@@ -22,19 +22,22 @@ function plotstate(bh::BoseHamiltonian, state::Vector{<:Number}, dims::Tuple{Int
     state_matrix
 end
 
-J = spzeros(4, 4)
-J[1, 2] = J[1, 3] = 1; J[2, 4] = J[3, 4] = 1
+#-------
 nbozons = 1
-lattice = Lattice(J, nbozons)
-bh = BoseHamiltonian(lattice)
-
+lattice3 = Lattice(nrows=3, ncols=3, J_default=1, periodic=true; nbozons)
+bh = BoseHamiltonian(lattice3)
+move_defects!(bh, Int[], Int[5])
 vals, vecs, info = eigsolve(bh.H, 1, :SR)
+(angle(bh.lattice.J[2, 1])+angle(bh.lattice.J[5, 2])-angle(bh.lattice.J[5, 4])-angle(bh.lattice.J[4, 1])) % 2π
+(angle(bh.lattice.J[6, 3])-angle(bh.lattice.J[6, 5])-angle(bh.lattice.J[5, 2])+angle(bh.lattice.J[3, 2])) % 2π
+(angle(bh.lattice.J[9, 6])-angle(bh.lattice.J[9, 8])-angle(bh.lattice.J[8, 5])+angle(bh.lattice.J[6, 5])) % 2π
+(angle(bh.lattice.J[8, 5])-angle(bh.lattice.J[8, 7])-angle(bh.lattice.J[7, 4])+angle(bh.lattice.J[5, 4])) % 2π
 
-plotstate(bh, vecs[1], (2, 2))
+plotstate(bh, vecs[1], (1, 6))
 
 #-------
 nbozons = 1
-lattice1 = Lattice(1, 6, 1.0, nbozons, true)
+lattice1 = Lattice(nrows=1, ncols=6, J_default=1, periodic=true; nbozons)
 bh = BoseHamiltonian(lattice1)
 
 vals, vecs, info = eigsolve(bh.H, 1, :SR)
@@ -43,18 +46,8 @@ plotstate(bh, vecs[1], (1, 6))
 
 #-------
 nbozons = 1
-lattice6 = Lattice(6, 6, ComplexF64(1), nbozons, true)
+lattice6 = Lattice(nrows=6, ncols=6, J_default=1, periodic=true; nbozons)
 Φ = π/3
-
-lattice6.J[2, 8] = lattice6.J[8, 14] =
-lattice6.J[9, 15] = lattice6.J[15, 21] =
-lattice6.J[16, 22] = lattice6.J[22, 28] =
-lattice6.J[23, 29] = lattice6.J[29, 35] = cispi(-Φ/2)
-
-lattice6.J[7, 8] = lattice6.J[8, 9] = 
-lattice6.J[14, 15] = lattice6.J[15, 16] = 
-lattice6.J[21, 22] = lattice6.J[22, 23] = 
-lattice6.J[28, 29] = lattice6.J[29, 30] = cispi(Φ/2)
 
 bh = BoseHamiltonian(lattice6)
 
