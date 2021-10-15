@@ -4,10 +4,10 @@ import Base.show
 
 "A type representing a lattice."
 mutable struct Lattice
-    J::SparseMatrixCSC{ComplexF64, Int64}  # tunnelling strengths
+    dims::Tuple{Int,Int}    # lattice dimensions
+    J::SparseMatrixCSC{ComplexF64, Int}  # tunnelling strengths
     J_default::ComplexF64   # default tunnelling value (between the cells of the same type)
     phases::Vector{Float64} # phases induced at each cell
-    ncells::Int             # number of cells
     nbozons::Int            # number of bozons 
     nstates::Int            # number of possible states (configurations)
     is_defect::BitVector    # indicates whether a cell is a defect or not
@@ -20,9 +20,9 @@ is specified by `J_default`. It is required when moving defects since it may be 
 `J` is assumed to be hermitian, hence only the upper triangular part may be specified.
 Number of cells is determined automatically as the number of rows in `J`.
 """
-function Lattice(J::SparseMatrixCSC{ComplexF64, Int64}, J_default::Number, phases::Vector{<:Real}, nbozons::Integer)
-    ncells = size(J)[1]
-    Lattice(J, ComplexF64(J_default), phases, ncells, nbozons, binomial(nbozons+ncells-1, nbozons), falses(ncells))
+function Lattice(dims::Tuple{Integer,Integer}, J::SparseMatrixCSC{ComplexF64,Int64}, J_default::Number, phases::Vector{<:Real}, nbozons::Integer)
+    ncells = prod(dims)
+    Lattice(dims, J, ComplexF64(J_default), phases, nbozons, binomial(nbozons+ncells-1, nbozons), falses(ncells))
 end
 
 """
@@ -32,7 +32,8 @@ The tunneling strengths are initialised to `J_default`.
 Boundary conditions are controlled by `periodic`. If lattice is periodic, the phases are claculated automatically
 to respect periodicity. If lattice is not periodic, a vector `Δϕ` of phases difference in the 𝑥 and 𝑦 directions may be given.
 """
-function Lattice(;nrows::Integer, ncols::Integer, J_default::Number, nbozons::Integer, Δϕ=[0.0, 0.0], periodic=true)
+function Lattice(;dims::Tuple{Integer,Integer}, J_default::Number, nbozons::Integer, Δϕ=[0.0, 0.0], periodic=true)
+    nrows, ncols = dims;
     J_size = (ncols-1) * nrows + (nrows-1) * ncols
     if periodic
         Δϕ .= [2π / ncols, 2π / nrows]
@@ -60,7 +61,7 @@ function Lattice(;nrows::Integer, ncols::Integer, J_default::Number, nbozons::In
             J_vals[counter] = J_default
             counter += 1
         end
-        phases[cell] = (Δϕ[1] * col + Δϕ[2] * row) % 2π
+        phases[cell] = Δϕ[1] * col + Δϕ[2] * row
         cell += 1
     end
     if periodic
@@ -80,7 +81,7 @@ function Lattice(;nrows::Integer, ncols::Integer, J_default::Number, nbozons::In
             counter += 1
         end
     end
-    Lattice(sparse(J_rows, J_cols, J_vals), J_default, phases, nbozons)
+    Lattice(dims, sparse(J_rows, J_cols, J_vals), J_default, phases, nbozons)
 end
 
 
@@ -137,11 +138,11 @@ Populate `bh.basis_states` and `bh.index_of_state`.
 """
 function makebasis!(bh::BoseHamiltonian)
     index = 1 # unique index identifying the state
-    nb, nc = bh.lattice.nbozons, bh.lattice.ncells
-    for partition in integer_partitions(nb)
-        length(partition) > nc && continue # Example (nbozons = 3, ncells = 2): partition = [[3,0], [2,1], [1,1,1]] -- skip [1,1,1] as impossible
-        append!(partition, zeros(nc-length(partition)))
-        for p in multiset_permutations(partition, nc)
+    ncells = prod(bh.lattice.dims)
+    for partition in integer_partitions(bh.lattice.nbozons)
+        length(partition) > ncells && continue # Example (nbozons = 3, ncells = 2): partition = [[3,0], [2,1], [1,1,1]] -- skip [1,1,1] as impossible
+        append!(partition, zeros(ncells-length(partition)))
+        for p in multiset_permutations(partition, ncells)
             bh.index_of_state[p] = index
             bh.basis_states[index] = p
             index += 1
@@ -157,34 +158,20 @@ function Base.show(io::IO, bh::BoseHamiltonian)
     end
 end
 
-# CORRECT BUT PROBABLY WON'T BE NEEDED  
-# "
-# Return a vector of of cell numbers that are neighbours of cell `cell` on a `nrows`x`ncols` lattice,
-# which is possibly periodic.
-# "
-# function get_neighbours(cell::Integer, nrows::Integer, ncols::Integer, periodic::Bool)
-#     neighbours = Int[]
-#     sizehint!(neighbours, 4)
-#     row = (cell-1) % nrows + 1
-#     col = (cell-1) ÷ nrows + 1
-#     row != 1 && push!(neighbours, cell-1)     # add the neighbour above
-#     row != nrows && push!(neighbours, cell+1) # add the neighbour below
-#     col != 1 && push!(neighbours, cell-nrows)     # add the neighbour to the left   
-#     col != ncols && push!(neighbours, cell+nrows) # add the neighbour to the right
-#     if periodic
-#         row == 1 && push!(neighbours, cell + nrows-1)
-#         row == nrows && push!(neighbours, cell - (nrows-1))
-#         col == 1 && push!(neighbours, cell + (ncols-1) * nrows)
-#         col == ncols && push!(neighbours, cell - (ncols-1) * nrows)
-#     end
-#     neighbours
-# end
-# 
-# function get_phase(cell::Integer, nrows::Integer, ncols::Integer)
-#     row = (cell-1) % nrows + 1
-#     col = nrows - ((cell-1) ÷ nrows + 1)
-#     2π * (row/nrows + col/ncols)
-# end
+"""
+Return the flux piercing a square plaquette whose upper left corner is cell number `cell`.
+The lattice is assumed not to be periodic.
+"""
+function get_flux(lattice::Lattice, cell::Integer)
+    flux = 0.0
+    froms = [cell, cell+1, cell+1 + lattice.dims[1], cell + lattice.dims[1]]
+    for (i, from) in enumerate(froms)
+        to = froms[i%4 + 1]
+        # if `to < from`, then `lattice.J[to, from]` is not stored, so we use conjugate of `lattice.J[from, to]`
+        flux += to > from ? angle(lattice.J[to, from]) : -angle(lattice.J[from, to])
+    end
+    flux % 2π
+end
 
 "Mark the cells with numbers given in `old_defects` as ordinary cells, recalculating the tunnelling matrix and the Hamiltonian."
 function remove_defects!(bh::BoseHamiltonian, old_defects::Vector{<:Integer})
@@ -220,7 +207,7 @@ function move_defects!(bh::BoseHamiltonian, old_defects::Vector{<:Integer}, new_
                 else
                     # note that necessarily `cell` > `neighbour`, so `J_vals[cell_index]` describes the transition `cell` ← `neighbour`
                     ϕ = bh.lattice.phases[cell] + bh.lattice.phases[neighbour]
-                    J_vals[cell_index] = cell_is_defect ? J_default * cis(ϕ) : -J_default * cis(-ϕ)  # we assume that external field is such that ϕᵢ > ϕⱼ for i > j
+                    J_vals[cell_index] = cell_is_defect ? J_default * cis(ϕ/2) : -J_default * cis(-ϕ/2)
                 end
             end
             for cell_index in findall(==(cell), J_cols)
@@ -233,7 +220,7 @@ function move_defects!(bh::BoseHamiltonian, old_defects::Vector{<:Integer}, new_
                 else
                     # note that necessarily `cell` < `neighbour`, so `J_vals[cell_index]` describes the transition `cell` → `neighbour`
                     ϕ = bh.lattice.phases[cell] + bh.lattice.phases[neighbour]
-                    J_vals[cell_index] = cell_is_defect ? -J_default * cis(-ϕ) : J_default * cis(ϕ)  # we assume that external field is such that ϕᵢ > ϕⱼ for i > j
+                    J_vals[cell_index] = cell_is_defect ? -J_default * cis(-ϕ/2) : J_default * cis(ϕ/2)
                 end
             end
         end
