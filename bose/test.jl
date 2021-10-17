@@ -19,7 +19,7 @@ function plotstate(bh::BoseHamiltonian, state::Vector{<:Number}, ε::Float64)
     x, y = 1:bh.lattice.dims[2], 1:bh.lattice.dims[1]
     state_matrix = reshape(final_state, bh.lattice.dims[1], bh.lattice.dims[2])
     heatmap(x, y, state_matrix, xticks=x, yticks=y, yflip=true, color=:viridis)
-    title!(L"\varepsilon = %$(round(ε, sigdigits=3))")
+    title!(L"\varepsilon = %$(round(ε, sigdigits=4))")
     
     defects = findall(bh.lattice.is_defect)
     defects_rows = [(cell-1) % bh.lattice.dims[1] + 1 for cell in defects]
@@ -85,13 +85,13 @@ vals, vecs, info = eigsolve(bh.H, 1, :SR)
 fs = plotstate(bh, vecs[1], vals[1])
 #------
 include("optimise.jl")
-ndefects = 4
+ndefects = 3
 nbozons = 1
 lattice6 =  Lattice(dims=(6, 6), J_default=1, periodic=true; nbozons)
 bh = BoseHamiltonian(lattice6)
 best_defects, best_val = optimise_defects(bh, ndefects)
-move_defects!(bh, findall(bh.lattice.is_defect), super_x)
+move_defects!(bh, findall(bh.lattice.is_defect), best_defects)
 vals, vecs, info = eigsolve(bh.H, 1, :SR)
 
 fs = plotstate(bh, vecs[1], vals[1])
-[21, 22, 26, 27]
+savefig("$ndefects.pdf")
