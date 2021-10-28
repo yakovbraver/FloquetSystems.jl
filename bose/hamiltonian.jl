@@ -160,12 +160,19 @@ function Base.show(io::IO, bh::BoseHamiltonian)
 end
 
 """
-Return the flux piercing a square plaquette whose upper left corner is cell number `cell`.
-The lattice is assumed not to be periodic.
+Return the flux piercing a square plaquette whose upper left corner is specified by `cell`.
+The lattice is assumed be periodic.
 """
-function get_flux(lattice::Lattice, cell::Integer)
+function get_flux(lattice::Lattice, cell::Tuple{<:Integer,<:Integer})
     flux = 0.0
-    froms = [cell, cell+1, cell+1 + lattice.dims[1], cell + lattice.dims[1]]
+    nrows, ncols = lattice.dims[1], lattice.dims[2]
+    row_below = cell[1]%lattice.dims[1] + 1
+    col_right = cell[2]%lattice.dims[2] + 1
+    neighbours = [cell,
+                  (row_below, cell[2]),
+                  (row_below, col_right),
+                  (cell[1], col_right)]
+    froms = map(x -> x[1] + (x[2]-1) * nrows, neighbours) # convert to cell numbers
     for (i, from) in enumerate(froms)
         to = froms[i%4 + 1]
         # if `to < from`, then `lattice.J[to, from]` is not stored, so we use conjugate of `lattice.J[from, to]`
