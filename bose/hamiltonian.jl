@@ -30,13 +30,14 @@ Construct a rectangular `nrows`x`ncols` lattice with `nbozons` bozons.
 The tunneling strengths are initialised to `J_default`.
 𝐽ᵢⱼ describes the transition of a particle form cell 𝑗 to cell 𝑖, and only the lower triangular part of 𝐽̂ is populated.
 Boundary conditions are controlled by `periodic`. If lattice is periodic, the phases are claculated automatically
-to respect periodicity. If lattice is not periodic, a vector `Δϕ` of phases difference in the 𝑥 and 𝑦 directions may be given.
+to respect periodicity, but phases can be additionally multiplied by an integer `nϕ`.
+If lattice is not periodic, a vector `Δϕ` of phases difference in the 𝑥 and 𝑦 directions can be provided.
 """
-function Lattice(;dims::Tuple{Integer,Integer}, J_default::Number, nbozons::Integer, Δϕ=[0.0, 0.0], periodic=true)
+function Lattice(;dims::Tuple{Integer,Integer}, J_default::Number, nbozons::Integer, Δϕ=[0.0, 0.0], periodic=true, nϕ=1)
     nrows, ncols = dims;
     J_size = (ncols-1) * nrows + (nrows-1) * ncols
     if periodic
-        Δϕ .= [2π / ncols, 2π / nrows]
+        Δϕ .= [2π / ncols, 2π / nrows] * nϕ
         nrows > 2 && (J_size += ncols)
         ncols > 2 && (J_size += nrows)
     end
