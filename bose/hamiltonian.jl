@@ -11,6 +11,7 @@ mutable struct Lattice
     nbozons::Int            # number of bozons 
     nstates::Int            # number of possible states (configurations)
     is_defect::BitVector    # indicates whether a cell is a defect or not
+    driving_type::Symbol
 end
 
 """
@@ -20,9 +21,9 @@ is specified by `J_default`. It is required when moving defects since it may be 
 `J` is assumed to be hermitian, hence only the upper triangular part may be specified.
 Number of cells is determined automatically as the number of rows in `J`.
 """
-function Lattice(dims::Tuple{Integer,Integer}, J::SparseMatrixCSC{ComplexF64,Int64}, J_default::Number, phases::Vector{<:Real}, nbozons::Integer)
+function Lattice(dims::Tuple{Integer,Integer}, J::SparseMatrixCSC{ComplexF64,Int64}, J_default::Number, phases::Vector{<:Real}, nbozons::Integer, driving_type=:linear)
     ncells = prod(dims)
-    Lattice(dims, J, ComplexF64(J_default), phases, nbozons, binomial(nbozons+ncells-1, nbozons), falses(ncells))
+    Lattice(dims, J, ComplexF64(J_default), phases, nbozons, binomial(nbozons+ncells-1, nbozons), falses(ncells), driving_type)
 end
 
 """
@@ -33,8 +34,8 @@ Boundary conditions are controlled by `periodic`. If lattice is periodic, the ph
 to respect periodicity, but phases can be additionally multiplied by an integer `nϕ`.
 If lattice is not periodic, a vector `Δϕ` of phases difference in the 𝑥 and 𝑦 directions can be provided.
 """
-function Lattice(;dims::Tuple{Integer,Integer}, J_default::Number, nbozons::Integer, Δϕ=[0.0, 0.0], periodic=true, nϕ=1)
-    nrows, ncols = dims;
+function Lattice(;dims::Tuple{Integer,Integer}, J_default::Number, nbozons::Integer, Δϕ=[0.0, 0.0], periodic=true, nϕ=1, driving_type=:linear)
+    nrows, ncols = dims
     J_size = (ncols-1) * nrows + (nrows-1) * ncols
     if periodic
         Δϕ .= [2π / ncols, 2π / nrows] * nϕ
@@ -82,7 +83,7 @@ function Lattice(;dims::Tuple{Integer,Integer}, J_default::Number, nbozons::Inte
             counter += 1
         end
     end
-    Lattice(dims, sparse(J_rows, J_cols, J_vals), J_default, phases, nbozons)
+    Lattice(dims, sparse(J_rows, J_cols, J_vals), J_default, phases, nbozons, driving_type)
 end
 
 
@@ -193,7 +194,7 @@ end
 
 """
 Mark the cells with numbers given in `old_defects` as ordinary cells, and the cells with numbers given in `new_defects` as defects.
-Rrecalculate the tunnelling matrix and the Hamiltonian.
+Recalculate the tunnelling matrix and the Hamiltonian.
 """
 function move_defects!(bh::BoseHamiltonian, old_defects::Vector{<:Integer}, new_defects::Vector{<:Integer})
     # update positions of defects in the lattice
@@ -214,8 +215,18 @@ function move_defects!(bh::BoseHamiltonian, old_defects::Vector{<:Integer}, new_
                     J_vals[cell_index] = J_default # restore the default tunneling strength
                 else
                     # note that necessarily `cell` > `neighbour`, so `J_vals[cell_index]` describes the transition `cell` ← `neighbour`
-                    ϕ = bh.lattice.phases[cell] + bh.lattice.phases[neighbour]
-                    J_vals[cell_index] = cell_is_defect ? J_default * cis(ϕ/2) : -J_default * cis(-ϕ/2)
+                    if bh.lattice.driving_type == :linear
+                        ϕ = (bh.lattice.phases[cell] + bh.lattice.phases[neighbour]) / 2
+                    else bh.lattice.driving_type == :circular
+                        i = rowcol(bh.lattice, cell)
+                        j = rowcol(bh.lattice, neighbour)
+                        xⱼᵢ = abs(j[2] - i[2]) == 1 ? j[2] - i[2] :
+                              (j[2] % bh.lattice.dims[2]) - (i[2] % bh.lattice.dims[2])
+                        yᵢⱼ = abs(i[1] - j[1]) == 1 ? i[1] - j[1] :
+                              (i[1] % bh.lattice.dims[1]) - (j[1] % bh.lattice.dims[1])
+                        ϕ = -atan(xⱼᵢ, yᵢⱼ)
+                    end
+                    J_vals[cell_index] = cell_is_defect ? J_default * cis(ϕ) : -J_default * cis(-ϕ)
                 end
             end
             for cell_index in findall(==(cell), J_cols)
@@ -227,8 +238,18 @@ function move_defects!(bh::BoseHamiltonian, old_defects::Vector{<:Integer}, new_
                     J_vals[cell_index] = J_default # restore the default tunneling strength
                 else
                     # note that necessarily `cell` < `neighbour`, so `J_vals[cell_index]` describes the transition `cell` → `neighbour`
-                    ϕ = bh.lattice.phases[cell] + bh.lattice.phases[neighbour]
-                    J_vals[cell_index] = cell_is_defect ? -J_default * cis(-ϕ/2) : J_default * cis(ϕ/2)
+                    if bh.lattice.driving_type == :linear
+                        ϕ = (bh.lattice.phases[cell] + bh.lattice.phases[neighbour]) / 2
+                    else bh.lattice.driving_type == :circular
+                        j = rowcol(bh.lattice, cell)
+                        i = rowcol(bh.lattice, neighbour)
+                        xⱼᵢ = abs(j[2] - i[2]) == 1 ? j[2] - i[2] :
+                              (j[2] % bh.lattice.dims[2]) - (i[2] % bh.lattice.dims[2])
+                        yᵢⱼ = abs(i[1] - j[1]) == 1 ? i[1] - j[1] :
+                              (i[1] % bh.lattice.dims[1]) - (j[1] % bh.lattice.dims[1])
+                        ϕ = -atan(xⱼᵢ, yᵢⱼ)
+                    end
+                    J_vals[cell_index] = cell_is_defect ? -J_default * cis(-ϕ) : J_default * cis(ϕ)
                 end
             end
         end
@@ -249,4 +270,10 @@ function move_defects!(bh::BoseHamiltonian, old_defects::Vector{<:Integer}, new_
             end
         end
     end
+end
+
+"Return a tuple (row, column) of the cell number `cell`"
+function rowcol(lattice::Lattice, cell::Integer)
+    (cell-1) % lattice.dims[1] + 1,
+    (cell-1) ÷ lattice.dims[1] + 1
 end
