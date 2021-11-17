@@ -11,7 +11,7 @@ mutable struct Lattice
     nbozons::Int            # number of bozons 
     nstates::Int            # number of possible states (configurations)
     is_defect::BitVector    # indicates whether a cell is a defect or not
-    driving_type::Symbol
+    driving_type::Symbol    # lattice driving type, linear or circular
 end
 
 """
@@ -204,6 +204,8 @@ function move_defects!(bh::BoseHamiltonian, old_defects::Vector{<:Integer}, new_
     updated = Int[] # will hold indices of elements of `bh.lattice.J` that have been updated because of relocation of defects
     J_rows, J_cols, J_vals = findnz(bh.lattice.J)
     J_default = bh.lattice.J_default # for convenience
+    Δϕ_x = bh.lattice.phases[bh.lattice.dims[1]+1] - bh.lattice.phases[1]
+    Δϕ_y = bh.lattice.phases[2] - bh.lattice.phases[1]
     for cells in (old_defects, new_defects) # first iterate over all cells that previously were defects, then over all cells that have become defects
         for cell in cells
             for cell_index in findall(==(cell), J_rows)
@@ -215,11 +217,17 @@ function move_defects!(bh::BoseHamiltonian, old_defects::Vector{<:Integer}, new_
                     J_vals[cell_index] = J_default # restore the default tunneling strength
                 else
                     # note that necessarily `cell` > `neighbour`, so `J_vals[cell_index]` describes the transition `cell` ← `neighbour`
+                    i = rowcol(bh.lattice, cell)
+                    j = rowcol(bh.lattice, neighbour)
                     if bh.lattice.driving_type == :linear
-                        ϕ = (bh.lattice.phases[cell] + bh.lattice.phases[neighbour]) / 2
+                        if abs(i[1] - j[1]) > 1 # wrapping around the row
+                            ϕ = bh.lattice.phases[neighbour] - Δϕ_y/2 + π
+                        elseif abs(i[2] - j[2]) > 1 # wrapping around the column
+                            ϕ = bh.lattice.phases[neighbour] - Δϕ_x/2 + π
+                        else
+                            ϕ = (bh.lattice.phases[cell] + bh.lattice.phases[neighbour]) / 2
+                        end
                     else bh.lattice.driving_type == :circular
-                        i = rowcol(bh.lattice, cell)
-                        j = rowcol(bh.lattice, neighbour)
                         xⱼᵢ = abs(j[2] - i[2]) == 1 ? j[2] - i[2] :
                               (j[2] % bh.lattice.dims[2]) - (i[2] % bh.lattice.dims[2])
                         yᵢⱼ = abs(i[1] - j[1]) == 1 ? i[1] - j[1] :
@@ -237,19 +245,25 @@ function move_defects!(bh::BoseHamiltonian, old_defects::Vector{<:Integer}, new_
                 if cell_is_defect == neighbour_is_defect
                     J_vals[cell_index] = J_default # restore the default tunneling strength
                 else
-                    # note that necessarily `cell` < `neighbour`, so `J_vals[cell_index]` describes the transition `cell` → `neighbour`
+                    # note that necessarily `cell` < `neighbour`, so `J_vals[cell_index]` describes the transition `neighbour` ← `cell`
+                    j = rowcol(bh.lattice, cell)
+                    i = rowcol(bh.lattice, neighbour)
                     if bh.lattice.driving_type == :linear
-                        ϕ = (bh.lattice.phases[cell] + bh.lattice.phases[neighbour]) / 2
+                        if abs(i[1] - j[1]) > 1 # wrapping around the row
+                            ϕ = bh.lattice.phases[cell] - Δϕ_y/2 + π
+                        elseif abs(i[2] - j[2]) > 1 # wrapping around the column
+                            ϕ = bh.lattice.phases[cell] - Δϕ_x/2 + π
+                        else
+                            ϕ = (bh.lattice.phases[cell] + bh.lattice.phases[neighbour]) / 2
+                        end
                     else bh.lattice.driving_type == :circular
-                        j = rowcol(bh.lattice, cell)
-                        i = rowcol(bh.lattice, neighbour)
                         xⱼᵢ = abs(j[2] - i[2]) == 1 ? j[2] - i[2] :
                               (j[2] % bh.lattice.dims[2]) - (i[2] % bh.lattice.dims[2])
                         yᵢⱼ = abs(i[1] - j[1]) == 1 ? i[1] - j[1] :
                               (i[1] % bh.lattice.dims[1]) - (j[1] % bh.lattice.dims[1])
                         ϕ = -atan(xⱼᵢ, yᵢⱼ)
                     end
-                    J_vals[cell_index] = cell_is_defect ? -J_default * cis(-ϕ) : J_default * cis(ϕ)
+                    J_vals[cell_index] = neighbour_is_defect ? J_default * cis(ϕ) : -J_default * cis(-ϕ)
                 end
             end
         end

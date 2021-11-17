@@ -43,13 +43,10 @@ end
 
 #-------
 nbozons = 1
-lattice3 = Lattice(dims=(3, 3), J_default=1, periodic=true; nbozons)
+lattice3 = Lattice(dims=(6, 6), J_default=1, periodic=true, nϕ=2, driving_type=:linear; nbozons)
 bh = BoseHamiltonian(lattice3)
-add_defects!(bh, [5])
-get_flux(bh.lattice, (1, 1))
-get_flux(bh.lattice, (2, 1))
-get_flux(bh.lattice, (1, 2))
-get_flux(bh.lattice, (2, 2))
+add_defects!(bh, [11,16,21,26,31])
+bh.lattice.J[6, 1]
 
 vals, vecs, info = eigsolve(bh.H, 1, :SR)
 plotstate(bh, vecs[1], vals[1])
@@ -110,15 +107,15 @@ fs = plotstate(bh, vecs[1], vals[1])
 savefig("$(ndefects).pdf")
 #------
 include("optimise.jl")
-ndefects = 8
+ndefects = 5
 nbozons = 1
-lattice = Lattice(dims=(6, 6), J_default=1, periodic=true, nϕ=1, driving_type=:circular; nbozons)
+lattice = Lattice(dims=(6, 6), J_default=1, periodic=true, nϕ=2, driving_type=:linear; nbozons)
 bh = BoseHamiltonian(lattice)
-# add_defects!(bh, [9,10,11,16,17,21,22,23])
+add_defects!(bh, [11,16,21,26,6])
 # move_defects!(bh, [15], [21])
 best_defects, best_val = optimise_defects(bh, ndefects)
 move_defects!(bh, findall(bh.lattice.is_defect), best_defects)
 vals, vecs, info = eigsolve(bh.H, 1, :SR)
 
 fs = plotstate(bh, vecs[1], vals[1])
-savefig("$(ndefects)_suboptimal.pdf")
+savefig("$(ndefects)_optimal.pdf")
