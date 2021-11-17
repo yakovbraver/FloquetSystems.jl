@@ -64,26 +64,6 @@ get_flux(bh.lattice, (2, 2))
 
 #-------
 nbozons = 1
-lattice6 = Lattice(dims=(6, 6), J_default=1, periodic=true; nbozons)
-bh = BoseHamiltonian(lattice6)
-
-energies = [-4.0]
-for pos in 1:6
-    add_defects!(bh, [pos])
-    vals, vecs, info = eigsolve(bh.H, 1, :SR)
-    push!(energies, vals[1])
-end
-
-fs = plotstate(bh, vecs[1], vals[1])
-en = copy(energies)
-plot(0:6, en, marker=:circle, label="diagonal")
-plot!(0:6, energies, marker=:circle, label="row", legend=:topleft)
-energies_optimal = [-4, energies[2], energies[3], -3.920, -3.930, -3.912, -3.911]
-plot!(0:6, energies_optimal, marker=:circle, label="optimised", xlabel="no. of defects")
-title!("6x6 periodic, " * L"\Delta\phi=\pi/3")
-savefig("6x6 periodic.pdf") 
-#-------
-nbozons = 1
 lattice35 = Lattice(dims=(35, 35), J_default=1, periodic=true; nbozons)
 bh = BoseHamiltonian(lattice35)
 add_defects!(bh, collect(range(103, length=4, step=34)))
@@ -106,16 +86,32 @@ vals, vecs, info = eigsolve(bh.H, 1, :SR)
 fs = plotstate(bh, vecs[1], vals[1])
 savefig("$(ndefects).pdf")
 #------
-include("optimise.jl")
-ndefects = 5
+"Repeat optimisation `niter` times and return the best result as a tuple `(defects, value)`."
+function search(lattice, ndefects, niter=20)
+    best_defects = Vector{Int}(undef, ndefects)
+    best_val = 10.0
+    defects = Vector{Int}(undef, ndefects)
+    val = 0.0
+    for _ in 1:niter
+        lat = deepcopy(lattice)
+        bh = BoseHamiltonian(lat)
+        defects, val = optimise_defects(bh, ndefects)
+        if val < best_val
+            best_val = val
+            best_defects = copy(defects)
+        end
+    end
+    (best_defects, best_val)
+end
+
+ndefects = 6
 nbozons = 1
 lattice = Lattice(dims=(6, 6), J_default=1, periodic=true, nϕ=2, driving_type=:linear; nbozons)
+best_defects, best_val = search(lattice, ndefects, 50)
 bh = BoseHamiltonian(lattice)
-add_defects!(bh, [11,16,21,26,6])
-# move_defects!(bh, [15], [21])
-best_defects, best_val = optimise_defects(bh, ndefects)
-move_defects!(bh, findall(bh.lattice.is_defect), best_defects)
+add_defects!(bh, best_defects)
+
 vals, vecs, info = eigsolve(bh.H, 1, :SR)
 
 fs = plotstate(bh, vecs[1], vals[1])
-savefig("$(ndefects)_optimal.pdf")
+savefig("$(ndefects)_optimal_3.pdf")
