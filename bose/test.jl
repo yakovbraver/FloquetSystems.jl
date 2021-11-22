@@ -32,7 +32,7 @@ function plotstate(bh::BoseHamiltonian, state::Vector{<:Number}, ε::Float64)
             if abs(flux) > 1e-3
                 f = rationalize(flux, tol=1e-5)
                 n, d = numerator(f), denominator(f)
-                annotate!([(col + 0.5, row + 0.5, (L"\frac{%$n}{%$d}", :white, 16))])
+                annotate!([(col + 0.5, row + 0.5, (L"\frac{%$n}{%$d}", :white, 8))]) # default size 16
             end
         end
     end
@@ -104,14 +104,68 @@ function search(lattice, ndefects, niter=20)
     (best_defects, best_val)
 end
 
-ndefects = 6
+ndefects = 3
 nbozons = 1
-lattice = Lattice(dims=(6, 6), J_default=1, periodic=true, nϕ=2, driving_type=:linear; nbozons)
-best_defects, best_val = search(lattice, ndefects, 50)
+lattice = Lattice(dims=(20, 20), J_default=1, periodic=true, nϕ=1, driving_type=:linear; nbozons)
+best_defects, best_val = search(lattice, ndefects, 10)
 bh = BoseHamiltonian(lattice)
+add_defects!(bh, [1,3,5,7])
 add_defects!(bh, best_defects)
 
 vals, vecs, info = eigsolve(bh.H, 1, :SR)
 
 fs = plotstate(bh, vecs[1], vals[1])
-savefig("$(ndefects)_optimal_3.pdf")
+savefig("$(ndefects)_optimal.pdf")
+
+
+ndefects = 3
+nbozons = 1
+
+su = 0
+# for i = 1:20
+    lattice = Lattice(dims=(20, 20), J_default=1, periodic=true, nϕ=1, driving_type=:linear; nbozons)
+    bh = BoseHamiltonian(lattice)
+    result = optimise_defects(bh, ndefects)
+    su += result[1]
+# end
+print(su/20)
+# nf = 1:
+# 0.6 0.8   -3.8992585335206407
+# 0.6 0.2   -3.9051314002712254
+# 0.5 0.2   -3.91085869948141 -- 100 % accuracy
+
+# nf = 2
+# 0.7 0.7    -3.9147032344709567
+# 0.7 0.2    -3.918400850397906
+# 0.5 0.2    -3.9200123055358653
+# 0.5 0.8    -3.9167476145633726
+# 0.4 0.8    -3.9204495471432046 
+# 0.4 0.5    -3.9202588817726394
+# 0.3 0.8    -3.922184444366672  -- 
+# 0.3 0.5    -3.9245450855090156 -- 
+# 0.3 0.2    -3.927662912334796  -- 
+# 0.3 0.1    -3.9259474499460736 -- 
+# 0.3 0.01   -3.9112211732734985
+# 0.2 0.2    -3.9264654644298176 -- 
+# 0.1 0.2    -3.9255605473931903 -- 
+# 0.1 0.8    -3.9309900496129657 -- 2 
+# 0.1 0.9    -3.931894966649596 -- 1
+# 0.1 0.95   -3.9309900496129644 -- 2
+
+println(result[1])
+println(result[3])
+println(result[4])
+
+old_defects = findall(bh.lattice.is_defect)
+new_defects = ceil.(Int, result[2])
+dublicates = intersect(old_defects, new_defects)
+move_defects!(bh, setdiff(old_defects, dublicates), setdiff(new_defects, dublicates))
+
+vals, vecs, info = eigsolve(bh.H, 1, :SR)
+
+fs = plotstate(bh, vecs[1], vals[1])
+savefig("$(ndefects)_optimal.pdf")
+
+lattice = Lattice(dims=(6, 6), J_default=1, periodic=true, nϕ=2, driving_type=:linear; nbozons)
+bh = BoseHamiltonian(lattice)
+add_defects!(bh, [11,10,16,15,8,21,20,26])
