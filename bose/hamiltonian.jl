@@ -184,12 +184,12 @@ end
 
 "Mark the cells with numbers given in `old_defects` as ordinary cells, recalculating the tunnelling matrix and the Hamiltonian."
 function remove_defects!(bh::BoseHamiltonian, old_defects::Vector{<:Integer})
-    move_defects!(bh::BoseHamiltonian, old_defects::Vector{<:Integer}, Int[])
+    move_defects!(bh, old_defects, Int[])
 end
 
 "Mark the cells with numbers given in `new_defects` as defects, recalculating the tunnelling matrix and the Hamiltonian."
 function add_defects!(bh::BoseHamiltonian, new_defects::Vector{<:Integer})
-    move_defects!(bh::BoseHamiltonian, Int[], new_defects::Vector{<:Integer})
+    move_defects!(bh, Int[], new_defects)
 end
 
 """
