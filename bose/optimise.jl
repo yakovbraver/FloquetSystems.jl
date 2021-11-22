@@ -1,7 +1,10 @@
 using KrylovKit
 
 include("hamiltonian.jl")
+include("de.jl")
+include("sa.jl")
 
+"Neighbour function for Simulated Annealing."
 function make_neighbour!(x_new::Vector{<:Integer}, x_current::Vector{<:Integer}, bh::BoseHamiltonian)
     ncells = prod(bh.lattice.dims)
     x_new .= x_current
@@ -15,12 +18,35 @@ function make_neighbour!(x_new::Vector{<:Integer}, x_current::Vector{<:Integer},
     move_defects!(bh, setdiff(old_defects, dublicates), setdiff(x_new, dublicates))
 end
 
-function goal_func(bh::BoseHamiltonian)
+"Goal function for Simulated Annealing."
+function goal_func_sa(bh::BoseHamiltonian)
     vals, _, _ = eigsolve(bh.H, 1, :SR)
     vals[1]
 end
 
-function optimise_defects(bh::BoseHamiltonian, ndefects::Integer)
+"Goal function for Differential Evolution."
+function goal_func_de!(bh::BoseHamiltonian, x)
+    old_defects = findall(bh.lattice.is_defect)
+    new_defects = ceil.(Int, x)
+    # check for defects occupying the same cell
+    l = length(new_defects)
+    for i in 1:l, j in i+1:l
+        new_defects[i] == new_defects[j] && return Inf
+    end
+    dublicates = intersect(old_defects, new_defects)
+    move_defects!(bh, setdiff(old_defects, dublicates), setdiff(new_defects, dublicates))
+
+    vals, _, _ = eigsolve(bh.H, 1, :SR)
+    vals[1]
+end
+
+"""
+Find the optimal configuration of defects using `method`, and return a tuple `(value, defects)`.
+The Hamiltonian object `bh` should not contain any defects, they will be added and optimised during execution of the function.
+When the function returns, the defects are set to the optimal configuration on `bh.lattice`. 
+"""
+function optimise_defects!(bh::BoseHamiltonian, ndefects::Integer; method::Symbol)
+    # initialisation: randomly place the defects on `bh.lattice`
     ncells = prod(bh.lattice.dims)
     defects = Vector{Int}(undef, ndefects)
     new_defect = rand(1:ncells)
@@ -32,47 +58,20 @@ function optimise_defects(bh::BoseHamiltonian, ndefects::Integer)
     end
     add_defects!(bh, defects)
 
-    anneal!(bh, defects, niterations=500, show_every=50)
-end
-
-"Temperature as a function of iteration number, i ≥ 1"
-temperature(i) = 1 / log(i)
-
-"Simulated annealing, adapted from Optim.jl"
-function anneal!(bh::BoseHamiltonian, current_state::Vector{<:Integer}; niterations::Integer, show_every=1000)
-    proposal_state = similar(current_state)
-    f_current = goal_func(bh)
-    best_state = similar(current_state)
-    f_best::Float64 = f_current
-    for i in 1:niterations            
-        # Determine the temperature for current iteration
-        T = temperature(i)
-        # Randomly generate a neighbor of our current state
-        make_neighbour!(proposal_state, current_state, bh)
-        # Evaluate the cost function at the proposed state
-        f_proposal = goal_func(bh)
-
-        if f_proposal <= f_current
-            # If proposal is superior, we always move to it
-            current_state .= proposal_state
-            f_current = f_proposal
-
-            # If the new state is the best state yet, keep a record of it
-            if f_proposal < f_best
-                f_best = f_proposal
-                best_state .= proposal_state
-            end
-        else
-            # If proposal is inferior, we move to it with probability p
-            p = exp(-(f_proposal - f_current) / T)
-            if rand() <= p
-                current_state .= proposal_state
-                f_current = f_proposal
-            end
-        end
-        if i % show_every == 0
-            println("iter $i: f_best = $f_best")
-        end
+    # optimise using the chosen method
+    best_val = 0
+    if method == :sa
+        best_val, defects = anneal!(bh, defects, make_neighbour!, goal_func_sa, niterations=500, show_every=50)
+    else
+        best_val, defects_index, _, _ = diff_evolution(x -> goal_func_de!(bh, x); lower=ones(ndefects), upper=ones(ndefects)*ncells, algorithm=:rand1bin, npoints=10,
+                                            CR=0.1, F=0.9, maxiter=200, trace_step=50, constrain_bounds=true)
+        defects = ceil.(Int, defects_index)
     end
-    (best_state, f_best)
+
+    # set the defect to the optimal configuration on `bh.lattice`
+    old_defects = findall(bh.lattice.is_defect)
+    dublicates = intersect(old_defects, defects)
+    move_defects!(bh, setdiff(old_defects, dublicates), setdiff(defects, dublicates))
+    
+    (best_val, defects)
 end
