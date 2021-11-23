@@ -82,30 +82,53 @@ savefig("$(ndefects).pdf")
 
 "Repeat optimisation `niter` times and return the best result as a tuple `(value, defects)`."
 function search(lattice, ndefects; niter=20, method::Symbol)
-    best_defects = Vector{Int}(undef, ndefects)
-    best_val = 10.0
-    defects = Vector{Int}(undef, ndefects)
-    val = 0.0
-    for _ in 1:niter
+    nthreads = Threads.nthreads()
+    best_defects = Matrix{Int}(undef, ndefects, nthreads)
+    best_vals = ones(nthreads)*100
+    Threads.@threads for _ in 1:niter
         lat = deepcopy(lattice)
         bh = BoseHamiltonian(lat)
         val, defects = optimise_defects!(bh, ndefects; method)
-        if val < best_val
-            best_val = val
-            best_defects = copy(defects)
+        tid = Threads.threadid()
+        if val < best_vals[tid]
+            best_vals[tid] = val
+            best_defects[:, tid] .= defects
         end
     end
-    (best_val, best_defects)
+    best_index = argmin(best_vals)
+    (best_vals[best_index], best_defects[:, best_index])
 end
 
-ndefects = 5
+ndefects = 7
 nbozons = 1
 lattice = Lattice(dims=(20, 20), J_default=1, periodic=true, nϕ=1, driving_type=:linear; nbozons)
-best_val, best_defects = search(lattice, ndefects, niter=10, method=:sa)
+best_val, best_defects = search(lattice, ndefects, niter=8, method=:de)
 bh = BoseHamiltonian(lattice)
+# add_defects!(bh, [9,10,30,28,48,49])
 add_defects!(bh, best_defects)
 
 vals, vecs, info = eigsolve(bh.H, 1, :SR)
 
 fs = plotstate(bh, vecs[1], vals[1])
 savefig("$(ndefects)_optimal.pdf")
+
+function param_sweep(;n_range, ndefects_range)
+    for n in n_range
+        foldername = "n = $n"
+        !isdir(foldername) && mkdir(foldername)
+        for ndefects in ndefects_range
+            lattice = Lattice(dims=(20, 20), J_default=1, periodic=true, nϕ=n, driving_type=:linear; nbozons)
+            best_val, best_defects = search(lattice, ndefects, niter=8, method=:de)
+            # writedlm("$foldername/$(ndefects)_optimal.txt", best_defects)
+            bh = BoseHamiltonian(lattice)
+            add_defects!(bh, best_defects)
+
+            vals, vecs, info = eigsolve(bh.H, 1, :SR)
+
+            fs = plotstate(bh, vecs[1], vals[1])
+            savefig("$foldername/$(ndefects)_optimal.pdf")
+        end
+    end
+end
+
+param_sweep(n_range=1:10, ndefects_range=3:7)

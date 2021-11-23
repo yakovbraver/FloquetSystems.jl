@@ -47,6 +47,7 @@ When the function returns, the defects are set to the optimal configuration on `
 """
 function optimise_defects!(bh::BoseHamiltonian, ndefects::Integer; method::Symbol)
     # initialisation: randomly place the defects on `bh.lattice`
+    remove_defects!(bh, findall(bh.lattice.is_defect)) # clean the lattice as it may contain defects
     ncells = prod(bh.lattice.dims)
     defects = Vector{Int}(undef, ndefects)
     new_defect = rand(1:ncells)
@@ -64,7 +65,7 @@ function optimise_defects!(bh::BoseHamiltonian, ndefects::Integer; method::Symbo
         best_val, defects = anneal!(bh, defects, make_neighbour!, goal_func_sa, niterations=500, show_every=50)
     else
         best_val, defects_index, _, _ = diff_evolution(x -> goal_func_de!(bh, x); lower=ones(ndefects), upper=ones(ndefects)*ncells, algorithm=:rand1bin, npoints=10,
-                                            CR=0.1, F=0.9, maxiter=200, trace_step=50, constrain_bounds=true)
+                                            CR=0.1, F=0.9, maxiter=400, trace_step=50, constrain_bounds=true)
         defects = ceil.(Int, defects_index)
     end
 
