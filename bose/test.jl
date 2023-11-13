@@ -1,4 +1,5 @@
 include("hamiltonian.jl")
+include("optimise.jl")
 
 using SparseArrays, KrylovKit
 using Plots, LaTeXStrings
@@ -19,7 +20,7 @@ function plotstate(bh::BoseHamiltonian, state::Vector{<:Number}, ε::Float64)
     x, y = 1:bh.lattice.dims[2], 1:bh.lattice.dims[1]
     state_matrix = reshape(final_state, bh.lattice.dims[1], bh.lattice.dims[2])
     fig = heatmap(x, y, state_matrix, xticks=x, yticks=y, yflip=true, color=:viridis)
-    title!(L"\varepsilon = %$(round(ε, sigdigits=6))" * "; fluxes are in units of pi")
+    title!(L"\varepsilon = %$(round(ε, sigdigits=6))" * "; fluxes given in units of " * L"\pi")
     
     defects = findall(bh.lattice.is_defect)
     defects_rows = [(cell-1) % bh.lattice.dims[1] + 1 for cell in defects]
@@ -32,7 +33,7 @@ function plotstate(bh::BoseHamiltonian, state::Vector{<:Number}, ε::Float64)
             if abs(flux) > 1e-3
                 f = rationalize(flux, tol=1e-5)
                 n, d = numerator(f), denominator(f)
-                annotate!([(col + 0.5, row + 0.5, (L"\frac{%$n}{%$d}", :white, 16))])
+                annotate!([(col + 0.5, row + 0.5, (L"\frac{%$n}{%$d}", :white, 8))]) # default size 16
             end
         end
     end
@@ -52,17 +53,7 @@ vals, vecs, info = eigsolve(bh.H, 1, :SR)
 plotstate(bh, vecs[1], vals[1])
 
 #-------
-nbozons = 1
-# lattice35 = Lattice(dims=(3, 5), J_default=1, periodic=false, Δϕ=[π/2, π/2]; nbozons)
-lattice35 = Lattice(dims=(3, 3), J_default=1, periodic=false, Δϕ=[π/3, π/3]; nbozons)
-bh = BoseHamiltonian(lattice35)
-add_defects!(bh, [5, 8])
-get_flux(bh.lattice, (1, 1))
-get_flux(bh.lattice, (2, 1))
-get_flux(bh.lattice, (1, 2))
-get_flux(bh.lattice, (2, 2))
 
-#-------
 nbozons = 1
 lattice35 = Lattice(dims=(35, 35), J_default=1, periodic=true; nbozons)
 bh = BoseHamiltonian(lattice35)
@@ -71,47 +62,73 @@ add_defects!(bh, collect(range(103, length=4, step=34)))
 vals, vecs, info = eigsolve(bh.H, 1, :SR)
 
 fs = plotstate(bh, vecs[1], vals[1])
+
 #------
-include("optimise.jl")
+
 ndefects = 6
 nbozons = 1
 lattice6 = Lattice(dims=(8, 8), J_default=1, periodic=true, nϕ=2; nbozons)
 bh = BoseHamiltonian(lattice6)
 add_defects!(bh, [13,12,19,20,27,29])
 # move_defects!(bh, [15], [21])
-best_defects, best_val = optimise_defects(bh, ndefects)
+best_val, best_defects = optimise_defects!(bh, ndefects, method=:sa)
 move_defects!(bh, findall(bh.lattice.is_defect), best_defects)
 vals, vecs, info = eigsolve(bh.H, 1, :SR)
 
 fs = plotstate(bh, vecs[1], vals[1])
 savefig("$(ndefects).pdf")
+
 #------
-"Repeat optimisation `niter` times and return the best result as a tuple `(defects, value)`."
-function search(lattice, ndefects, niter=20)
-    best_defects = Vector{Int}(undef, ndefects)
-    best_val = 10.0
-    defects = Vector{Int}(undef, ndefects)
-    val = 0.0
-    for _ in 1:niter
+
+"Repeat optimisation `niter` times and return the best result as a tuple `(value, defects)`."
+function search(lattice, ndefects; niter=20, method::Symbol)
+    nthreads = Threads.nthreads()
+    best_defects = Matrix{Int}(undef, ndefects, nthreads)
+    best_vals = ones(nthreads)*100
+    Threads.@threads for _ in 1:niter
         lat = deepcopy(lattice)
         bh = BoseHamiltonian(lat)
-        defects, val = optimise_defects(bh, ndefects)
-        if val < best_val
-            best_val = val
-            best_defects = copy(defects)
+        val, defects = optimise_defects!(bh, ndefects; method)
+        tid = Threads.threadid()
+        if val < best_vals[tid]
+            best_vals[tid] = val
+            best_defects[:, tid] .= defects
         end
     end
-    (best_defects, best_val)
+    best_index = argmin(best_vals)
+    (best_vals[best_index], best_defects[:, best_index])
 end
 
-ndefects = 6
+ndefects = 7
 nbozons = 1
-lattice = Lattice(dims=(6, 6), J_default=1, periodic=true, nϕ=2, driving_type=:linear; nbozons)
-best_defects, best_val = search(lattice, ndefects, 50)
+lattice = Lattice(dims=(20, 20), J_default=1, periodic=true, nϕ=1, driving_type=:linear; nbozons)
+best_val, best_defects = search(lattice, ndefects, niter=8, method=:de)
 bh = BoseHamiltonian(lattice)
+# add_defects!(bh, [9,10,30,28,48,49])
 add_defects!(bh, best_defects)
 
 vals, vecs, info = eigsolve(bh.H, 1, :SR)
 
 fs = plotstate(bh, vecs[1], vals[1])
-savefig("$(ndefects)_optimal_3.pdf")
+savefig("$(ndefects)_optimal.pdf")
+
+function param_sweep(;n_range, ndefects_range)
+    for n in n_range
+        foldername = "n = $n"
+        !isdir(foldername) && mkdir(foldername)
+        for ndefects in ndefects_range
+            lattice = Lattice(dims=(20, 20), J_default=1, periodic=true, nϕ=n, driving_type=:linear; nbozons)
+            best_val, best_defects = search(lattice, ndefects, niter=8, method=:de)
+            # writedlm("$foldername/$(ndefects)_optimal.txt", best_defects)
+            bh = BoseHamiltonian(lattice)
+            add_defects!(bh, best_defects)
+
+            vals, vecs, info = eigsolve(bh.H, 1, :SR)
+
+            fs = plotstate(bh, vecs[1], vals[1])
+            savefig("$foldername/$(ndefects)_optimal.pdf")
+        end
+    end
+end
+
+param_sweep(n_range=1:10, ndefects_range=3:7)
