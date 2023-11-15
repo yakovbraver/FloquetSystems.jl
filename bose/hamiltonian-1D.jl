@@ -34,7 +34,14 @@ function constructH!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
     H_rows, H_cols, H_vals = Int[], Int[], Float64[]
     (;J, U, f, ω) = bh
     Jeff = J * besselj0(f)
-    a_max = 5
+
+    J_sum = [0.0, 0.0]
+    if order == 3
+        a_max = 20
+        J_sum[1] = J^2 * U / 2ω^2 * sum(         besselj(a, f)^2 / a^2 for a in [-a_max:-1; 1:a_max]) # for 𝑗 = k
+        J_sum[2] = J^2 * U / 2ω^2 * sum((-1)^a * besselj(a, f)^2 / a^2 for a in [-a_max:-1; 1:a_max]) # for 𝑗 ≠ k
+    end
+
     # take each basis state and find which transitions are possible
     for (state, index) in bh.index_of_state
         val_d = 0.0 # diagonal value
@@ -63,61 +70,59 @@ function constructH!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
             end
 
             if order == 3
-                for a in [-a_max:-1; 1:a_max]
-                    for j in (i-1, i+1), k in (i-1, i+1)
-                        if j == 0
-                            !isperiodic && continue
-                            j = bh.ncells
-                        elseif j == bh.ncells + 1
-                            !isperiodic && continue
-                            j = 1
-                        end
-                        if k == 0
-                            !isperiodic && continue
-                            k = bh.ncells
-                        elseif k == bh.ncells + 1
-                            !isperiodic && continue
-                            k = 1
-                        end
-                        C = J^2 * U / 2(a*ω)^2 * (-1)^a * besselj(a, i-j) * besselj(a, k-i)
-                        # 𝑎†ₖ (𝑛ᵢ - 𝑛ⱼ) 𝑎ⱼ
-                        if (state[j] > 0 && state[i] != state[j]-1)
-                            val = C * 2√( (k == j ? state[k] : state[k]+1) * state[j] ) * (state[i] - (state[j]-1))
-                            bra = copy(state)
-                            bra[j] -= 1
-                            bra[k] += 1
-                            row = bh.index_of_state[bra]
-                            push_state!(H_rows, H_cols, H_vals, val; row, col=index)
-                        end
-                        # 𝑎†ᵢ 𝑎†ᵢ 𝑎ₖ 𝑎ⱼ
-                        if ( (k == j && state[j] > 1) || (k != j && state[k] > 0 && state[j] > 0))
-                            val = -C * (-1)^a * √( (state[i]+2) * (state[i]+1) * (k == j ? (state[j]-1)state[j] : state[j]state[k]))
-                            bra = copy(state)
-                            bra[j] -= 1
-                            bra[k] -= 1
-                            bra[i] += 2
-                            row = bh.index_of_state[bra]
-                            push_state!(H_rows, H_cols, H_vals, val; row, col=index)
-                        end
-                        # 𝑎†ⱼ (𝑛ᵢ - 𝑛ⱼ) 𝑎ₖ
-                        if (state[k] > 0 && state[i] != (j == k ? state[j]-1 : state[j]))
-                            val = C * 2√( (j == k ? state[j] : state[j]+1) * state[k] ) * (state[i] - (j == k ? state[j]-1 : state[j]))
-                            bra = copy(state)
-                            bra[k] -= 1
-                            bra[j] += 1
-                            row = bh.index_of_state[bra]
-                            push_state!(H_rows, H_cols, H_vals, val; row, col=index)
-                        end
-                        # 𝑎†ₖ 𝑎†ⱼ 𝑎ᵢ 𝑎ᵢ
-                        if (state[i] > 1)
-                            val = -C * (-1)^a * √( (k == j ? (state[j]+2) * (state[j]+1) : (state[k]+1) * (state[j]+1)) * (state[i]-1)state[i])
-                            bra = copy(state)
-                            bra[i] -= 2
-                            bra[j] += 1
-                            bra[k] += 1
-                            row = bh.index_of_state[bra]
-                            push_state!(H_rows, H_cols, H_vals, val; row, col=index)
-                        end
+                for j in (i-1, i+1), k in (i-1, i+1)
+                    if j == 0
+                        !isperiodic && continue
+                        j = bh.ncells
+                    elseif j == bh.ncells + 1
+                        !isperiodic && continue
+                        j = 1
+                    end
+                    if k == 0
+                        !isperiodic && continue
+                        k = bh.ncells
+                    elseif k == bh.ncells + 1
+                        !isperiodic && continue
+                        k = 1
+                    end
+                    C₁, C₂ = j == k ? J_sum : (J_sum[2], J_sum[1])
+                    # 𝑎†ₖ (𝑛ᵢ - 𝑛ⱼ) 𝑎ⱼ
+                    if (state[j] > 0 && state[i] != state[j]-1)
+                        val = C₁ * 2√( (k == j ? state[k] : state[k]+1) * state[j] ) * (state[i] - (state[j]-1))
+                        bra = copy(state)
+                        bra[j] -= 1
+                        bra[k] += 1
+                        row = bh.index_of_state[bra]
+                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                    end
+                    # 𝑎†ⱼ (𝑛ᵢ - 𝑛ⱼ) 𝑎ₖ
+                    if (state[k] > 0 && state[i] != (j == k ? state[j]-1 : state[j]))
+                        val = C₁ * 2√( (j == k ? state[j] : state[j]+1) * state[k] ) * (state[i] - (j == k ? state[j]-1 : state[j]))
+                        bra = copy(state)
+                        bra[k] -= 1
+                        bra[j] += 1
+                        row = bh.index_of_state[bra]
+                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                    end
+                    # 𝑎†ᵢ 𝑎†ᵢ 𝑎ₖ 𝑎ⱼ
+                    if ( (k == j && state[j] > 1) || (k != j && state[k] > 0 && state[j] > 0))
+                        val = -C₂ * √( (state[i]+2) * (state[i]+1) * (k == j ? (state[j]-1)state[j] : state[j]state[k]))
+                        bra = copy(state)
+                        bra[j] -= 1
+                        bra[k] -= 1
+                        bra[i] += 2
+                        row = bh.index_of_state[bra]
+                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                    end
+                    # 𝑎†ₖ 𝑎†ⱼ 𝑎ᵢ 𝑎ᵢ
+                    if (state[i] > 1)
+                        val = -C₂ * √( (k == j ? (state[j]+2) * (state[j]+1) : (state[k]+1) * (state[j]+1)) * (state[i]-1)state[i])
+                        bra = copy(state)
+                        bra[i] -= 2
+                        bra[j] += 1
+                        bra[k] += 1
+                        row = bh.index_of_state[bra]
+                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
                     end
                 end
             end
