@@ -55,3 +55,22 @@ scatter!(Us, spectrum' .- ω, xlabel="U/J", markersize=0.5, markerstrokewidth=0,
 
 yaxis!((-7, 7)); yticks!(-7:3.5:7)
 xaxis!((0,10))
+
+# Exact quasienergy spectrum
+nbozons = 5; ncells = 5
+binomial(nbozons+ncells-1, nbozons)
+J = 1 # setting to 1 so that `U` is measured in units of `J`
+ω = 20
+U = 1; F = 2ω
+bh = BoseHamiltonian(J, U, 0, ncells, nbozons, isperiodic=true)
+Us = range(0, 20, 10)
+
+quasienergy(bh, F, ω, Us)
+@btime ε = quasienergy(bh, F, ω, Us)
+scatter(Us, ε', xlabel="U/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, title="F = $F")
+yaxis!((-1, 2)); yticks!(-1:1:2)
+
+# using DelimitedFiles
+# open("spectrum_F40.txt", "w") do io
+#     writedlm(io, ε)
+# end

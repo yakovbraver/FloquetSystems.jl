@@ -1,4 +1,6 @@
 using SparseArrays, Combinatorics, SpecialFunctions
+using DifferentialEquations, FLoops
+using LinearAlgebra: diagind, eigvals, I
 
 import Base.show
 
@@ -92,4 +94,45 @@ function Base.show(io::IO, bh::BoseHamiltonian)
     for (i, j, val) in zip(H_rows, H_cols, H_vals) # iterate over the terms of the Hamiltonian
         println(io, bh.basis_states[i], " Ĥ ", bh.basis_states[j], " = ", round(val, sigdigits=3))
     end
+end
+
+"""
+Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`.
+Passed `bh` should correrspond to 𝑈 = 1 and 𝐹 = 0.
+"""
+function quasienergy(bh::BoseHamiltonian, F::Real, ω::Real, Us::AbstractVector{<:Real})
+    n_levels = size(bh.H, 1)
+    n_U = length(Us)
+
+    T = 2π / ω
+    tspan = (0.0, T)
+    
+    ε = Matrix{Float64}(undef, n_levels, n_U)
+    C₀ = Matrix{ComplexF64}(I, n_levels, n_levels)
+
+    H = copy(bh.H)
+    di = diagind(H)
+    inter_term = H[di] # interaction term 𝑈/2 ∑ 𝑛ᵢ(𝑛ᵢ - 1) for 𝑈 = 1
+
+    drive_term = similar(inter_term)
+    for (state, index) in bh.index_of_state
+        drive_term[index] = sum(F * j * state[j] for j in eachindex(state)) # ⟨s| ∑ 𝐹𝑗𝑛ⱼ |s⟩
+    end
+
+    H .*= -im # as in the lhs of the Schrödinger equation
+    for (i, U) in enumerate(Us)
+        params = (di, inter_term, U, drive_term, ω)
+        H_op = DiffEqArrayOperator(H, update_func=update_func!)
+        prob = ODEProblem(H_op, C₀, tspan, params, save_everystep=false)
+        sol = solve(prob, MagnusGauss4(), dt=T/100)
+        ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
+    end
+
+    return ε
+end
+
+"Update rhs operator (used for monodromy matrix calculation)."
+function update_func!(H, u, p, t)
+    di, inter_term, U, drive_term, ω = p
+    @. H[di] .= -im * (inter_term * U + drive_term * cos(ω*t))
 end
