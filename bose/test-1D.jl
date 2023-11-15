@@ -25,24 +25,27 @@ nbozons = 5
 ncells = 5
 binomial(nbozons+ncells-1, nbozons)
 J = 1 # setting to 1 so that `U` is measured in units of `J`
-U = 0
-f = 1.5
-ω = 14
+U = 3
+f = 2
+ω = 20
 sqrt(2)J * besselj0(f) * nbozons
 -2J * besselj0(f)
-bh = BoseHamiltonian(J, U, f, ncells, nbozons)
+@time bh = BoseHamiltonian(J, U, f, ω, ncells, nbozons, isperiodic=true, order=3);
 # @time vals, vecs, info = eigsolve(bh.H, 100, krylovdim=126, :SR)
 vals, vecs = eigen(Hermitian(Matrix(bh.H)))
 plotstate(bh, vecs[:, 1], vals[1])
 plot(abs2.(vecs[:, 1]))
 
-
+M = copy(bh.H)
+M[diagind(M)] .= 0
+heatmap(real.(M), yaxis=:flip)
+ishermitian(bh.H)
 nvals = binomial(nbozons+ncells-1, nbozons)
 nU = 500
 spectrum = Matrix{Float64}(undef, nvals, nU)
-Us = range(0, 5, nU)
+Us = range(0, 10, nU)
 for (iU, U) in enumerate(Us)
-    bh = BoseHamiltonian(J, U, f, ncells, nbozons, isperiodic=false)
+    bh = BoseHamiltonian(J, U, f, ω, ncells, nbozons, isperiodic=true, order=3)
     # vals, vecs, info = eigsolve(bh.H, nvals, krylovdim=nvals, :SR)
     # spectrum[:, iU] = vals[1:nvals]
     spectrum[:, iU] = eigvals(Hermitian(Matrix(bh.H)))
@@ -50,11 +53,11 @@ end
 
 spectrum .%= ω
 spectrum[spectrum .< 0] .+= ω
-scatter(Us, spectrum', xlabel="U/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, title="f = $f")
-scatter!(Us, spectrum' .- ω, xlabel="U/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native)
-
-yaxis!((-7, 7)); yticks!(-7:3.5:7)
-xaxis!((0,10))
+scatter(Us, spectrum', xlabel="U/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, title="f = $f");
+scatter!(Us, spectrum' .- ω, xlabel="U/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
+title!("order = 3");
+yaxis!((-10, 10))
+yaxis!((-1, 2))
 
 # Exact quasienergy spectrum
 nbozons = 5; ncells = 5
@@ -62,7 +65,7 @@ binomial(nbozons+ncells-1, nbozons)
 J = 1 # setting to 1 so that `U` is measured in units of `J`
 ω = 20
 U = 1; F = 2ω
-bh = BoseHamiltonian(J, U, 0, ncells, nbozons, isperiodic=true)
+bh = BoseHamiltonian(J, U, 0, ω, ncells, nbozons, isperiodic=true)
 Us = range(0, 20, 10)
 
 quasienergy(bh, F, ω, Us)
