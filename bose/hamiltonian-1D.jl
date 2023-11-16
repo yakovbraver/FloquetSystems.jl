@@ -86,18 +86,18 @@ function constructH!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
                         k = 1
                     end
                     C₁, C₂ = j == k ? J_sum : (J_sum[2], J_sum[1])
-                    # 𝑎†ₖ (𝑛ᵢ - 𝑛ⱼ) 𝑎ⱼ
+                    # 𝑎†ₖ (2𝑛ᵢ - 𝑛ⱼ) 𝑎ⱼ
                     if (state[j] > 0 && state[i] != state[j]-1)
-                        val = C₁ * 2√( (k == j ? state[k] : state[k]+1) * state[j] ) * (state[i] - (state[j]-1))
+                        val = C₁ * √( (k == j ? state[k] : state[k]+1) * state[j] ) * (2state[i] - (state[j]-1))
                         bra = copy(state)
                         bra[j] -= 1
                         bra[k] += 1
                         row = bh.index_of_state[bra]
                         push_state!(H_rows, H_cols, H_vals, val; row, col=index)
                     end
-                    # 𝑎†ⱼ (𝑛ᵢ - 𝑛ⱼ) 𝑎ₖ
+                    # 𝑎†ⱼ (2𝑛ᵢ - 𝑛ⱼ) 𝑎ₖ
                     if (state[k] > 0 && state[i] != (j == k ? state[j]-1 : state[j]))
-                        val = C₁ * 2√( (j == k ? state[j] : state[j]+1) * state[k] ) * (state[i] - (j == k ? state[j]-1 : state[j]))
+                        val = C₁ * √( (j == k ? state[j] : state[j]+1) * state[k] ) * (2state[i] - (j == k ? state[j]-1 : state[j]))
                         bra = copy(state)
                         bra[k] -= 1
                         bra[j] += 1
