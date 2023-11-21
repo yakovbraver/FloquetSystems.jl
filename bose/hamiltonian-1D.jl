@@ -1,6 +1,7 @@
 using SparseArrays, Combinatorics, SpecialFunctions
 using DifferentialEquations, FLoops
 using LinearAlgebra: diagind, eigvals, I
+using ProgressMeter: @showprogress
 
 import Base.show
 
@@ -38,8 +39,8 @@ function constructH!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
     J_sum = [0.0, 0.0]
     if order == 3
         a_max = 20
-        J_sum[1] = J^2 * U / 2ω^2 * sum(         besselj(a, f)^2 / a^2 for a in [-a_max:-1; 1:a_max]) # for 𝑗 = k
-        J_sum[2] = J^2 * U / 2ω^2 * sum((-1)^a * besselj(a, f)^2 / a^2 for a in [-a_max:-1; 1:a_max]) # for 𝑗 ≠ k
+        J_sum[1] = (J/ω)^2 * U * sum(         besselj(a, f)^2 / a^2 for a in 1:a_max) # for 𝑗 = k
+        J_sum[2] = (J/ω)^2 * U * sum((-1)^a * besselj(a, f)^2 / a^2 for a in 1:a_max) # for 𝑗 ≠ k
     end
 
     # take each basis state and find which transitions are possible
@@ -187,8 +188,8 @@ function quasienergy(bh::BoseHamiltonian, F::Real, ω::Real, Us::AbstractVector{
         drive_term[index] = sum(F * j * state[j] for j in eachindex(state)) # ⟨s| ∑ 𝐹𝑗𝑛ⱼ |s⟩
     end
 
-    H .*= -im # as in the lhs of the Schrödinger equation
-    for (i, U) in enumerate(Us)
+    H .*= -im # as on the lhs of the Schrödinger equation
+    @showprogress for (i, U) in enumerate(Us)
         params = (di, inter_term, U, drive_term, ω)
         H_op = DiffEqArrayOperator(H, update_func=update_func!)
         prob = ODEProblem(H_op, C₀, tspan, params, save_everystep=false)
