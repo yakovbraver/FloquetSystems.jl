@@ -140,8 +140,8 @@ function constructH_U!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
     (;J, U, f, ω) = bh
     Jeff = J * besselj0(f)
 
-    n_max = bh.nbozons + 1
-    n_min = -bh.nbozons - 3
+    n_max = bh.nbozons - 1
+    n_min = -bh.nbozons - 1
     R1 = Dict{Int64, Real}()
     R2 = Dict{Int64, Real}()
     for n in n_min:n_max
@@ -149,6 +149,9 @@ function constructH_U!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
         R2[n] = 𝑅(ω, U*n, type=2)
     end
 
+    js = Vector{Int}(undef, 12)
+    ks = Vector{Int}(undef, 12)
+    ls = Vector{Int}(undef, 12)
     # take each basis state and find which transitions are possible
     for (state, index) in bh.index_of_state
         val_d = 0.0 # diagonal value
@@ -176,82 +179,88 @@ function constructH_U!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
                 end
             end
 
+            js[1:6] .= i-1; js[7:12] .= i+1;
+            ks .= [i-2, i-1, i-1, i, i, i+1, i-1, i, i, i+1, i+1, i+2]
+            ls .= [i-1, i-2, i, i-1, i+1, i, i, i-1, i+1, i, i+2, i+1]
             if order == 2
-                for (j, j₂, k) in zip((i-1, i+1), (i-2, i+2), (i+1, i-1))
-                    if j == 0
-                        j = bh.ncells
-                    elseif j == bh.ncells + 1
-                        j = 1
-                    elseif k == 0
-                        k = bh.ncells
-                    elseif k == bh.ncells + 1
-                        k = 1
+                #   j    k    l
+                #   i-1  j-1  k+1
+                #   i-1  j    k-1
+                #   i-1  j    k+1
+                #   i-1  i    k-1
+                #   i-1  i    k+1
+                #   i-1  i+1  k-1
+                
+                #   i+1  i-1  k+1
+                #   i+1  i    k-1
+                #   i+1  i    k+1
+                #   i+1  j    k-1
+                #   i+1  j    k+1
+                #   i+1  j+1  k-1
+
+                #   j    k    l
+                #   i-1  i-2  i-1
+                #   i-1  i-1  i-2
+                #   i-1  i-1  i
+                #   i-1  i    i-1
+                #   i-1  i    i+1
+                #   i-1  i+1  i
+                
+                #   i+1  i-1  i
+                #   i+1  i    i-1
+                #   i+1  i    i+1
+                #   i+1  i+1  i
+                #   i+1  i+1  i+2
+                #   i+1  i+2  i+1
+                for (j, k, l) in zip(js, ks, ls)
+                    if j < 1
+                        j = bh.ncells + j
+                    elseif j > bh.ncells
+                        j = j - bh.ncells
                     end
-                    if j₂ < 1
-                        j₂ = bh.ncells + j₂
-                    elseif j₂ > bh.ncells
-                        j₂ = j₂ - bh.ncells
+                    if k < 1
+                        k = bh.ncells + k
+                    elseif k > bh.ncells
+                        k = k - bh.ncells
+                    end
+                    if l < 1
+                        l = bh.ncells + l
+                    elseif l > bh.ncells
+                        l = l - bh.ncells
                     end
 
-                    if (state[j] > 1)
-                        # 𝑎†ᵢ 𝑎†ᵢ 𝑎ⱼ 𝑎ⱼ
-                        n = state[i]+2 - (state[j]-2)
-                        val = -J/2 * (R1[n - 3] - R1[n - 1]) * √((state[i]+1) * (state[i]+2) * state[j] * (state[j]-1))
+                    # 𝑎†ᵢ 𝑎ⱼ [𝑏𝜔+𝑈(𝑛ₖ-𝑛ₗ-1)]⁻¹ 𝑎†ₖ 𝑎ₗ
+                    if ( state[l] > 0 && (j == k || (j == l && state[j] > 1) || (j != l && state[j] > 0)) )
+                        R = i-j == k-l ? R1 : R2
+                        val = -J/2
                         bra = copy(state)
-                        bra[j] -= 2
-                        bra[i] += 2
-                        row = bh.index_of_state[bra]
-                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
-
-                        # 𝑎†ᵢ 𝑎†ⱼ₂ 𝑎ⱼ 𝑎ⱼ
-                        n = state[i]+1 - (state[j]-2)
-                        val = -J/2 * (R2[n - 2] - R2[n - 1]) * √((state[j₂]+1) * (state[i]+1) * state[j] * (state[j]-1))
-                        bra = copy(state)
-                        bra[j] -= 2
-                        bra[i] += 1
-                        bra[j₂] += 1
-                        row = bh.index_of_state[bra]
-                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
-                    end
-                    # 𝑎†ᵢ 𝑎†ᵢ 𝑎ⱼ 𝑎ₖ
-                    if (state[j] > 0 && state[k] > 0)
-                        n = state[i]+2 - (state[j]-1)
-                        val = -J/2 * (R2[n - 2] - R2[n - 1]) * √((state[i]+1) * (state[i]+2) * state[j] * state[k])
-                        bra = copy(state)
-                        bra[j] -= 1
-                        bra[k] -= 1
-                        bra[i] += 2
-                        row = bh.index_of_state[bra]
-                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
-                    end
-                    # 𝑎†ₖ (𝑛ᵢ + 1) 𝑎ⱼ - 𝑎†ₖ 𝑛ᵢ 𝑎ⱼ
-                    if (state[j] > 0)
-                        n = state[i] - (state[j]-1)
-                        val = -J/2 * R1[n] * (state[i] + 1) * √((state[k]+1) * state[j])
-                              +J/2 * R1[n - 1] * state[i] * √((state[k]+1) * state[j])
-                        bra = copy(state)
-                        bra[j] -= 1
+                        val *= √bra[l]
+                        bra[l] -= 1
                         bra[k] += 1
-                        row = bh.index_of_state[bra]
-                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
-                    end
-                    # 𝑎†ᵢ 𝑛ⱼ 𝑎ⱼ₂ - 𝑎†ᵢ (𝑛ⱼ + 1) 𝑎ⱼ₂
-                    if (state[j₂] > 0)
-                        n = state[i]+1 - state[j]
-                        val = -J/2 * R1[n] * state[j] * √((state[i]+1) * state[j₂])
-                              +J/2 * R1[n - 1] * (state[j] + 1) * √((state[i]+1) * state[j₂])
-                        bra = copy(state)
-                        bra[j₂] -= 1
+                        val *= R[bra[k] - bra[l] - 1] * √bra[k]
+                        val *= √bra[j]
+                        bra[j] -= 1
                         bra[i] += 1
+                        val *= √bra[i]
                         row = bh.index_of_state[bra]
                         push_state!(H_rows, H_cols, H_vals, val; row, col=index)
                     end
-                    # 𝑛ⱼ (𝑛ᵢ + 1) - (𝑛ⱼ + 1) 𝑛ᵢ
-                    if state[i] > 0 && state[j] > 0
-                        n = state[i] - state[j]
-                        val = -J/2 * R2[n + 1] * state[j] * (state[i]+1)
-                            +J/2 * R2[n - 1] * (state[j] + 1) * state[i]
-                        push_state!(H_rows, H_cols, H_vals, val; row=index, col=index)
+
+                    # [𝑏𝜔+𝑈(𝑛ₖ-𝑛ₗ-1)]⁻¹ 𝑎†ₖ 𝑎ₗ 𝑎†ᵢ 𝑎ⱼ 
+                    if ( state[j] > 0 && (l == i || (l == j && state[l] > 1) || (l != j && state[l] > 0)) )
+                        R = i-j == k-l ? R1 : R2
+                        val = +J/2
+                        bra = copy(state)
+                        val *= √bra[j]
+                        bra[j] -= 1
+                        bra[i] += 1
+                        val *= √bra[i]
+                        val *= √bra[l]
+                        bra[l] -= 1
+                        bra[k] += 1
+                        val *= R[bra[k] - bra[l] - 1] * √bra[k]
+                        row = bh.index_of_state[bra]
+                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
                     end
                 end
             end
@@ -262,7 +271,7 @@ function constructH_U!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
 end
 
 function 𝑅(ω::Real, Un::Real; type::Integer)
-    N = 5
+    N = 20
     a₀ = round(Int, -Un / ω)
     # if `Un / ω` is integer, a₀ should be skipped in the sum
     a_range = isinteger(Un / ω) ? [a₀-N:a₀-1; a₀+1:a₀+N] : collect(a₀-N:a₀+N) # collect for type stability
