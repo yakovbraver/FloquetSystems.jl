@@ -16,23 +16,29 @@ mutable struct BoseHamiltonian
     ω::Real
     ncells::Int
     nbozons::Int
-    H::SparseMatrixCSC{ComplexF64, Int} # the Hamiltonian matrix
+    isperiodic::Bool
+    type::Symbol
+    order::Int
+    H::SparseMatrixCSC{Float64, Int} # the Hamiltonian matrix
     basis_states::Vector{Vector{Int}}     # all basis states as a vector (index => state)
     index_of_state::Dict{Vector{Int},Int} # a dictionary (state => index)
 end
 
 "Construct a `BoseHamiltonian` object defined on `lattice`."
-function BoseHamiltonian(J::Real, U::Real, f::Real, ω::Real, ncells::Integer, nbozons::Integer; isperiodic::Bool, order::Integer=1)
+function BoseHamiltonian(J::Real, U::Real, f::Real, ω::Real, ncells::Integer, nbozons::Integer; isperiodic::Bool, order::Integer=1, type::Symbol=:smallU)
     nstates = binomial(nbozons+ncells-1, nbozons)
-    bh = BoseHamiltonian(float(J), float(U), float(f), float(ω), ncells, nbozons, spzeros(Float64, 1, 1), Vector{Vector{Int}}(undef, nstates), Dict{Vector{Int},Int}())
+    bh = BoseHamiltonian(float(J), float(U), float(f), float(ω), ncells, nbozons, isperiodic, type, order, spzeros(Float64, 1, 1), Vector{Vector{Int}}(undef, nstates), Dict{Vector{Int},Int}())
     makebasis!(bh)
-    # constructH!(bh, isperiodic, order)
-    constructH_U!(bh, isperiodic, order)
+    if type == :smallU
+        constructH_smallU!(bh, isperiodic, order)
+    else
+        constructH_largeU!(bh, isperiodic, order)
+    end
     bh
 end
 
 "Construct the Hamiltonian matrix."
-function constructH!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
+function constructH_smallU!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
     H_rows, H_cols, H_vals = Int[], Int[], Float64[]
     (;J, U, f, ω) = bh
     Jeff = J * besselj0(f)
@@ -135,7 +141,7 @@ function constructH!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
 end
 
 "Construct the Hamiltonian matrix."
-function constructH_U!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
+function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
     H_rows, H_cols, H_vals = Int[], Int[], Float64[]
     (;J, U, f, ω) = bh
     Jeff = J * besselj0(f)
@@ -157,7 +163,7 @@ function constructH_U!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
         val_d = 0.0 # diagonal value
         for i = 1:bh.ncells # iterate over the terms of the Hamiltonian
             # 𝑛ᵢ(𝑛ᵢ - 1)
-            if (state[i] > 1) # check that at least two particles are present at site `i` so that destruction 𝑎ⱼ𝑎ⱼ is possible
+            if (state[i] > 1)
                 val_d += bh.U/2 * state[i] * (state[i] - 1)
             end
             # 𝑎†ᵢ 𝑎ⱼ
@@ -183,35 +189,6 @@ function constructH_U!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
             ks .= [i-2, i-1, i-1, i, i, i+1, i-1, i, i, i+1, i+1, i+2]
             ls .= [i-1, i-2, i, i-1, i+1, i, i, i-1, i+1, i, i+2, i+1]
             if order == 2
-                #   j    k    l
-                #   i-1  j-1  k+1
-                #   i-1  j    k-1
-                #   i-1  j    k+1
-                #   i-1  i    k-1
-                #   i-1  i    k+1
-                #   i-1  i+1  k-1
-                
-                #   i+1  i-1  k+1
-                #   i+1  i    k-1
-                #   i+1  i    k+1
-                #   i+1  j    k-1
-                #   i+1  j    k+1
-                #   i+1  j+1  k-1
-
-                #   j    k    l
-                #   i-1  i-2  i-1
-                #   i-1  i-1  i-2
-                #   i-1  i-1  i
-                #   i-1  i    i-1
-                #   i-1  i    i+1
-                #   i-1  i+1  i
-                
-                #   i+1  i-1  i
-                #   i+1  i    i-1
-                #   i+1  i    i+1
-                #   i+1  i+1  i
-                #   i+1  i+1  i+2
-                #   i+1  i+2  i+1
                 for (j, k, l) in zip(js, ks, ls)
                     if j < 1
                         j = bh.ncells + j
@@ -232,7 +209,7 @@ function constructH_U!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
                     # 𝑎†ᵢ 𝑎ⱼ [𝑏𝜔+𝑈(𝑛ₖ-𝑛ₗ-1)]⁻¹ 𝑎†ₖ 𝑎ₗ
                     if ( state[l] > 0 && (j == k || (j == l && state[j] > 1) || (j != l && state[j] > 0)) )
                         R = i-j == k-l ? R1 : R2
-                        val = -J/2
+                        val = -J^2/2
                         bra = copy(state)
                         val *= √bra[l]
                         bra[l] -= 1
@@ -249,7 +226,7 @@ function constructH_U!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
                     # [𝑏𝜔+𝑈(𝑛ₖ-𝑛ₗ-1)]⁻¹ 𝑎†ₖ 𝑎ₗ 𝑎†ᵢ 𝑎ⱼ 
                     if ( state[j] > 0 && (l == i || (l == j && state[l] > 1) || (l != j && state[l] > 0)) )
                         R = i-j == k-l ? R1 : R2
-                        val = +J/2
+                        val = +J^2/2
                         bra = copy(state)
                         val *= √bra[j]
                         bra[j] -= 1
@@ -322,11 +299,12 @@ function Base.show(io::IO, bh::BoseHamiltonian)
     end
 end
 
-"""
-Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`.
-Passed `bh` should correrspond to 𝑈 = 1 and 𝐹 = 0.
-"""
+"Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`."
 function quasienergy(bh::BoseHamiltonian, F::Real, ω::Real, Us::AbstractVector{<:Real})
+    if bh.U != 1 || bh.f != 0 || bh.order != 1
+        @error "Passed `bh` should correrspond to 𝑈 = 1, 𝐹 = 0, and order = 1. Terminating."
+        return
+    end
     n_levels = size(bh.H, 1)
     n_U = length(Us)
 
@@ -336,7 +314,7 @@ function quasienergy(bh::BoseHamiltonian, F::Real, ω::Real, Us::AbstractVector{
     ε = Matrix{Float64}(undef, n_levels, n_U)
     C₀ = Matrix{ComplexF64}(I, n_levels, n_levels)
 
-    H = copy(bh.H)
+    H = complex(bh.H)
     di = diagind(H)
     inter_term = H[di] # interaction term 𝑈/2 ∑ 𝑛ᵢ(𝑛ᵢ - 1) for 𝑈 = 1
 
