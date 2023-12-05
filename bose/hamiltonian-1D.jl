@@ -151,8 +151,8 @@ function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
     R1 = Dict{Int64, Real}()
     R2 = Dict{Int64, Real}()
     for n in n_min:n_max
-        R1[n] = 𝑅(ω, U*n, type=1)
-        R2[n] = 𝑅(ω, U*n, type=2)
+        R1[n] = 𝑅(ω, U*n, f, type=1)
+        R2[n] = 𝑅(ω, U*n, f, type=2)
     end
 
     js = Vector{Int}(undef, 12)
@@ -247,7 +247,7 @@ function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
     bh.H = sparse(H_rows, H_cols, H_vals)
 end
 
-function 𝑅(ω::Real, Un::Real; type::Integer)
+function 𝑅(ω::Real, Un::Real, f::Real; type::Integer)
     N = 20
     a₀ = round(Int, -Un / ω)
     # if `Un / ω` is integer, a₀ should be skipped in the sum
@@ -256,12 +256,12 @@ function 𝑅(ω::Real, Un::Real; type::Integer)
     if type == 1
         for a in a_range
             a == 0 && continue
-            r += 1/(a*ω + Un) * besselj(a, 1)^2 * (-1)^a
+            r += 1/(a*ω + Un) * besselj(a, f)^2 * (-1)^a
         end
     else
         for a in a_range
             a == 0 && continue
-            r += 1/(a*ω + Un) * besselj(a, 1)^2
+            r += 1/(a*ω + Un) * besselj(a, f)^2
         end
     end
     return r
