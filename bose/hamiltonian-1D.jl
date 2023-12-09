@@ -44,7 +44,7 @@ function constructH_smallU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
     Jeff = J * besselj0(f)
 
     J_sum = [0.0, 0.0]
-    if order == 3
+    if order == 2
         a_max = 20
         J_sum[1] = (J/ω)^2 * U * sum(         besselj(a, f)^2 / a^2 for a in 1:a_max) # for 𝑗 = k
         J_sum[2] = (J/ω)^2 * U * sum((-1)^a * besselj(a, f)^2 / a^2 for a in 1:a_max) # for 𝑗 ≠ k
@@ -77,7 +77,7 @@ function constructH_smallU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
                 end
             end
 
-            if order == 3
+            if order == 2
                 for j in (i-1, i+1), k in (i-1, i+1)
                     if j == 0
                         !isperiodic && continue
@@ -323,7 +323,7 @@ function quasienergy(bh::BoseHamiltonian, F::Real, ω::Real, Us::AbstractVector{
         drive_term[index] = sum(F * j * state[j] for j in eachindex(state)) # ⟨s| ∑ 𝐹𝑗𝑛ⱼ |s⟩
     end
 
-    H .*= -im # as on the lhs of the Schrödinger equation
+    H .*= -im # as on the rhs of the Schrödinger equation: ∂ₜ𝜓 = -i𝐻𝜓
     @showprogress for (i, U) in enumerate(Us)
         params = (di, inter_term, U, drive_term, ω)
         H_op = DiffEqArrayOperator(H, update_func=update_func!)
