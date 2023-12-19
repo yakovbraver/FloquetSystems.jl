@@ -24,27 +24,28 @@ end
 nbozons = 5; ncells = 5
 binomial(nbozons+ncells-1, nbozons)
 J = 1 # setting to 1 so that `U` is measured in units of `J`
-U = 10#sqrt(1.01)
-f = 2
+U = 1#sqrt(1.01)
+f = 0
 ω = 20
--sqrt(2)J * besselj0(f) * nbozons
--2J * besselj0(f) *  nbozons
-@time bh = BoseHamiltonian(J, U, f, ω, ncells, nbozons, isperiodic=true, type=:smallU, order=1)
+-2J * besselj0(f) * nbozons * cos(π/(ncells+1)) # non-periodic: exact ground state energy of 𝑊¹ at 𝑈 = 0; spectrum of 𝑊¹ at 𝑈 = 0 is NOT the exact quasienergy spectrum
+-2J * besselj0(f) * nbozons # periodic: exact ground state energy of 𝑊¹ at 𝑈 = 0; spectrum of 𝑊¹ at 𝑈 = 0 IS the exact quasienergy spectrum
+@time bh = BoseHamiltonian(J, U, f, ω, ncells, nbozons, isperiodic=false, type=:smallU, order=1)
 # @time vals, vecs, info = eigsolve(bh.H, 100, krylovdim=126, :SR)
 vals, vecs = eigen(Symmetric(Matrix(bh.H)))
-plotstate(bh, vecs[:, 1], vals[1])
-plot(abs2.(vecs[:, 1]))
+scatter(vals, xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"f=%$f", markersize=2, markerstrokewidth=0, c=2, legend=false, ticks=:native)
+scatter!([-2J * cos(π*i/(ncells+1)) for i in 1:ncells], xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"f=%$f", markersize=2, markerstrokewidth=0, c=2, legend=false, ticks=:native)
 
 M = copy(bh.H)
 M[diagind(M)] .= 0
 heatmap(M, yaxis=:flip, c=:coolwarm)
+heatmap(bh.H, yaxis=:flip, c=:coolwarm)
 
 nvals = binomial(nbozons+ncells-1, nbozons)
 nU = 1000
 spectrum = Matrix{Float64}(undef, nvals, nU)
-Us = range(0, 20, nU) #.* √1.01
+Us = range(0, 5, nU) #.* √1.01
 for (iU, U) in enumerate(Us)
-    bh = BoseHamiltonian(J, U, f, ω, ncells, nbozons, isperiodic=true, type=:smallU, order=2)
+    bh = BoseHamiltonian(J, U, f, ω, ncells, nbozons, isperiodic=false, type=:smallU, order=2)
     # vals, vecs, info = eigsolve(bh.H, nvals, krylovdim=nvals, :SR)
     # spectrum[:, iU] = vals[1:nvals]
     spectrum[:, iU] = eigvals(Symmetric(Matrix(bh.H)))
@@ -53,35 +54,41 @@ end
 gr()
 plotlyjs()
 spectrum .%= ω
-# spectrum .+= 2ω
 spectrum[spectrum .< 0] .+= ω
 scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
 scatter!(Us, spectrum' .- ω, xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
 hline!([-2J * besselj0(f) *  nbozons * cos(2pi/ncells * i) for i in 1:ncells])
-title!(L"\omega/J=%$ω, F/\omega=%$f"*", order=2")
+f3 = title!("order=$(bh.order)")
 savefig("order=2-zoom.png")
-savefig("exact.html")
 yaxis!((-2, 2))
 yaxis!((-10.5, 10.5))
 
 # Exact quasienergy spectrum
 nbozons = 5; ncells = 5
-binomial(nbozons+ncells-1, nbozons)
 J = 1 # setting to 1 so that `U` is measured in units of `J`
 ω = 20
-U = 1; F = 40#0.5ω
-bh = BoseHamiltonian(J, U, 0, ω, ncells, nbozons, isperiodic=true)
-Us = range(0, 10, 2)
+U = 1
+f = 2
+bh = BoseHamiltonian(J, U, f, ω, ncells, nbozons, isperiodic=false, type=:smallU)
 
-ε = quasienergy(bh, F, ω, Us)
-scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F=%$F", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native)
-yaxis!((-1, 2)); yticks!(-1:1:2)
-plot!(ylims=(-5, 1), xlims=(5.5, 8))
-yticks!(-1:1:2)
+Us = range(0, 1, 2)
+ε = quasienergy(bh, Us)
+minimum(ε[:, 1])
+
+gr()
+scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f"*", exact", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native)
+scatter!(Us, ε' .+ 20, xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$(F/ω)", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native)
+scatter!(Us, ε' .- 20, xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$(F/ω)", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native)
+ylims!(-20, 20)
+title!(L"F/\omega=%$(F/ω)"*", exact")
+savefig("exact-zoom2.png")
+ylims!(-2, 2)
+vline!([40/3], c=:white)
+plot!(minorgird=true, minorticks=5, minorgridalpha=1)
 
 using DelimitedFiles
 ε = readdlm("spectrum_F10.txt")
 
-# open("spectrum_F30.txt", "w") do io
-#     writedlm(io, ε)
-# end
+open("f2_U12-15.txt", "w") do io
+    writedlm(io, ε)
+end

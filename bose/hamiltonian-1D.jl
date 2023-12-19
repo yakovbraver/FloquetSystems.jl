@@ -300,33 +300,61 @@ function Base.show(io::IO, bh::BoseHamiltonian)
 end
 
 "Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`."
-function quasienergy(bh::BoseHamiltonian, F::Real, ω::Real, Us::AbstractVector{<:Real})
-    if bh.U != 1 || bh.f != 0 || bh.order != 1
-        @error "Passed `bh` should correrspond to 𝑈 = 1, 𝐹 = 0, and order = 1. Terminating."
-        return
+function quasienergy(bh::BoseHamiltonian, Us::AbstractVector{<:Real})
+    H_rows, H_cols, H_vals = Int[], Int[], ComplexF64[]
+    H_sign = Int[] # stores the sign of the tunneling phase for each off-diagonal element
+    (;J, f, ω, isperiodic) = bh
+
+    # Construct the Hamiltonian with `f` = 0 and `U` = 1
+    # off-diagonal elements 𝑎†ᵢ 𝑎ⱼ
+    for (state, index) in bh.index_of_state
+        for i = 1:bh.ncells # iterate over the terms of the Hamiltonian
+            for (j, s) in zip((i-1, i+1), (-1, 1))
+                if j == 0
+                    !isperiodic && continue
+                    j = bh.ncells
+                elseif j == bh.ncells + 1
+                    !isperiodic && continue
+                    j = 1
+                end
+                # 𝑎†ᵢ 𝑎ⱼ
+                if (state[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
+                    val = -im * -J * sqrt( (state[i]+1) * state[j] ) # multiply by `-im` as in the rhs of ∂ₜ𝜓 = -i𝐻𝜓
+                    bra = copy(state)
+                    bra[j] -= 1
+                    bra[i] += 1
+                    row = bh.index_of_state[bra]
+                    push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                    push!(H_sign, s)
+                end
+            end
+        end
     end
+    # diagonal elements 𝑛ᵢ(𝑛ᵢ - 1)
+    U = 1
+    for (state, index) in bh.index_of_state
+        val = 0.0
+        for i = 1:bh.ncells
+            if (state[i] > 1)
+                val += -im * U/2 * state[i] * (state[i] - 1) # multiply by `-im` as in the rhs of ∂ₜ𝜓 = -i𝐻𝜓
+            end
+        end
+        push_state!(H_rows, H_cols, H_vals, val; row=index, col=index)
+    end
+
     n_levels = size(bh.H, 1)
     n_U = length(Us)
-
-    T = 2π / ω
-    tspan = (0.0, T)
-    
     ε = Matrix{Float64}(undef, n_levels, n_U)
     C₀ = Matrix{ComplexF64}(I, n_levels, n_levels)
-
-    H = complex(bh.H)
-    di = diagind(H)
-    inter_term = H[di] # interaction term 𝑈/2 ∑ 𝑛ᵢ(𝑛ᵢ - 1) for 𝑈 = 1
-
-    drive_term = similar(inter_term)
-    for (state, index) in bh.index_of_state
-        drive_term[index] = sum(F * j * state[j] for j in eachindex(state)) # ⟨s| ∑ 𝐹𝑗𝑛ⱼ |s⟩
-    end
-
-    H .*= -im # as on the rhs of the Schrödinger equation: ∂ₜ𝜓 = -i𝐻𝜓
+    
+    T = 2π / ω
+    tspan = (0.0, T)
+    nstates = binomial(bh.nbozons+bh.ncells-1, bh.nbozons)
+    H_vals_U = copy(H_vals) # `H_vals_U` will be mutated depending on `U`
     @showprogress for (i, U) in enumerate(Us)
-        params = (di, inter_term, U, drive_term, ω)
-        H_op = DiffEqArrayOperator(H, update_func=update_func!)
+        H_vals_U[end-nstates+1:end] .= U .* H_vals[end-nstates+1:end] # update last `nstates` values in `H_vals_U` -- these are diagonal elements of the Hamiltonian
+        params = (H_rows, H_cols, H_vals_U, H_sign, f, ω, nstates)
+        H_op = DiffEqArrayOperator(sparse(H_rows, H_cols, H_vals_U), update_func=update_func!)
         prob = ODEProblem(H_op, C₀, tspan, params, save_everystep=false)
         sol = solve(prob, MagnusGauss4(), dt=T/100)
         ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
@@ -337,6 +365,8 @@ end
 
 "Update rhs operator (used for monodromy matrix calculation)."
 function update_func!(H, u, p, t)
-    di, inter_term, U, drive_term, ω = p
-    @. H[di] .= -im * (inter_term * U + drive_term * cos(ω*t))
+    H_rows, H_cols, H_vals, H_sign, f, ω, nstates = p
+    vals = copy(H_vals)
+    vals[1:end-nstates] .*= cis.(f .* sin(ω.*t) .* H_sign) # update off diagonal elements of the Hamiltonian
+    H .= sparse(H_rows, H_cols, vals)
 end
