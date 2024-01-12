@@ -22,16 +22,17 @@ mutable struct BoseHamiltonian
     H::SparseMatrixCSC{Float64, Int} # the Hamiltonian matrix
     basis_states::Vector{Vector{Int}}     # all basis states as a vector (index => state)
     index_of_state::Dict{Vector{Int},Int} # a dictionary (state => index)
+    space_of_state::Vector{Int}    # i'th element stores the subspace number of i'th state, with -1 indicating nondegenerate space
 end
 
 "Construct a `BoseHamiltonian` object defined on `lattice`."
-function BoseHamiltonian(J::Real, U::Real, f::Real, ω::Real, ncells::Integer, nbozons::Integer; isperiodic::Bool, order::Integer=1, type::Symbol=:smallU)
+function BoseHamiltonian(J::Real, U::Real, f::Real, ω::Real, ncells::Integer, nbozons::Integer, space_of_state::Vector{Int}=Vector{Int}(); isperiodic::Bool, order::Integer=1, type::Symbol=:smallU)
     nstates = binomial(nbozons+ncells-1, nbozons)
-    bh = BoseHamiltonian(float(J), float(U), float(f), float(ω), ncells, nbozons, isperiodic, type, order, spzeros(Float64, 1, 1), Vector{Vector{Int}}(undef, nstates), Dict{Vector{Int},Int}())
+    bh = BoseHamiltonian(float(J), float(U), float(f), float(ω), ncells, nbozons, isperiodic, type, order, spzeros(Float64, 1, 1), Vector{Vector{Int}}(undef, nstates), Dict{Vector{Int},Int}(), space_of_state)
     makebasis!(bh)
     if type == :smallU
         constructH_smallU!(bh, isperiodic, order)
-    else
+    elseif type == :largeU
         constructH_largeU!(bh, isperiodic, order)
     end
     bh
@@ -141,7 +142,7 @@ function constructH_smallU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
 end
 
 "Construct the Hamiltonian matrix."
-function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
+function constructH_largeU_diverging!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
     H_rows, H_cols, H_vals = Int[], Int[], Float64[]
     (;J, U, f, ω) = bh
     Jeff = J * besselj0(f)
@@ -267,10 +268,131 @@ function 𝑅(ω::Real, Un::Real, f::Real; type::Integer)
     return r
 end
 
+"Construct the Hamiltonian matrix."
+function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
+    H_rows, H_cols, H_vals = Int[], Int[], Float64[]
+    (;J, U, f, ω) = bh
+
+    A = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int}, Float64}()
+    js = Vector{Int}(undef, 12)
+    ks = Vector{Int}(undef, 12)
+    ls = Vector{Int}(undef, 12)
+    # take each basis state and find which transitions are possible
+    for (state, index) in bh.index_of_state
+        # skip states of nondegenerate subspace
+        b = bh.space_of_state[index]
+        if b == -1
+            continue
+        end
+        val_d = 0.0 # diagonal value
+        for i = 1:bh.ncells # iterate over the terms of the Hamiltonian
+
+            # 0th order
+            if (state[i] > 1)
+                val_d += bh.U/2 * state[i] * (state[i] - 1)
+            end
+
+            # 1st order
+            for j in (i-1, i+1)
+                if j == 0
+                    !isperiodic && continue
+                    j = bh.ncells
+                elseif j == bh.ncells + 1
+                    !isperiodic && continue
+                    j = 1
+                end
+                if (state[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
+                    bra = copy(state)
+                    bra[j] -= 1
+                    bra[i] += 1
+                    a = bh.space_of_state[bh.index_of_state[bra]]
+                    if a >= 0 # proceed only if bra is in the degenerate space
+                        val = -J * besselj(b - a, f*(i-j)) * sqrt( (state[i]+1) * state[j] )
+                        row = bh.index_of_state[bra]
+                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                    end
+                end
+            end
+
+            if order >= 2
+                js[1:6] .= i-1; js[7:12] .= i+1;
+                ks .= [i-2, i-1, i-1, i, i, i+1, i-1, i, i, i+1, i+1, i+2]
+                ls .= [i-1, i-2, i, i-1, i+1, i, i, i-1, i+1, i, i+2, i+1]
+                for (j, k, l) in zip(js, ks, ls)
+                    if j < 1
+                        j = bh.ncells + j
+                    elseif j > bh.ncells
+                        j = j - bh.ncells
+                    end
+                    if k < 1
+                        k = bh.ncells + k
+                    elseif k > bh.ncells
+                        k = k - bh.ncells
+                    end
+                    if l < 1
+                        l = bh.ncells + l
+                    elseif l > bh.ncells
+                        l = l - bh.ncells
+                    end
+
+                    # 𝑎†ᵢ 𝑎ⱼ 𝑎†ₖ 𝑎ₗ
+                    if ( state[l] > 0 && (j == k || (j == l && state[j] > 1) || (j != l && state[j] > 0)) )
+                        val = +J^2/2
+                        bra = copy(state)
+                        val *= √bra[l]
+                        bra[l] -= 1
+                        bra[k] += 1
+                        c = bh.space_of_state[bh.index_of_state[bra]]
+                        # beta = copy(bra)
+                        val *= √bra[k]
+                        val *= √bra[j]
+                        bra[j] -= 1
+                        bra[i] += 1
+                        bra_index = bh.index_of_state[bra]
+                        a = bh.space_of_state[bra_index]
+                        if a != -1
+                            # index == 52 && println((bra, beta, state, a, b, c))
+                            val *= √bra[i]
+                            val *= (get_A!(A, U, ω, f, state[l]-state[k]-1, 0, i-j, k-l, a, b, c) +
+                                    get_A!(A, U, ω, f, bra[i]-bra[j]-1, a-b, i-j, k-l, a, b, c))
+                            # index == 52 && println(val)
+                            b < a && (val = conj(val))
+                            push_state!(H_rows, H_cols, H_vals, val; row=bra_index, col=index)
+                        end
+                    end
+                end
+            end
+        end
+        push_state!(H_rows, H_cols, H_vals, val_d - bh.space_of_state[index] * ω; row=index, col=index)
+    end
+    bh.H = sparse(H_rows, H_cols, H_vals)
+end
+
 function push_state!(H_rows, H_cols, H_vals, val; row, col)
     push!(H_vals, val)
     push!(H_cols, col)
     push!(H_rows, row)
+end
+
+function get_A!(A, U, ω, f, nα, m, ij, kl, a, b, c)
+    key = (nα, m, ij, kl, a, b, c)
+    if !haskey(A, key)
+        N = 20
+        n₀ = round(Int, U*nα / ω) + m
+        s = 0.0
+        if c == -1
+            for n in n₀-N:n₀+N
+                s += 1/(U*nα + (m-n)*ω) * besselj(a-b-n, f*ij) * besselj(n, f*kl)
+            end
+        else
+            for n in n₀-N:n₀+N
+                (n == 2a-b-c || n == b-c) && continue
+                s += 1/(U*nα + (m-n)*ω) * besselj(a-b-n, f*ij) * besselj(n, f*kl)
+            end
+        end
+        A[key] = s
+    end
+    return A[key]
 end
 
 """
