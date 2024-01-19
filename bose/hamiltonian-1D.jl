@@ -277,11 +277,12 @@ function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
     js = Vector{Int}(undef, 12)
     ks = Vector{Int}(undef, 12)
     ls = Vector{Int}(undef, 12)
+    i_j = 0; k_l = 0 # for storing differences `i-j` and `k-l`
     # take each basis state and find which transitions are possible
     for (state, index) in bh.index_of_state
         # skip states of nondegenerate subspace
-        b = bh.space_of_state[index]
-        if b == -1
+        a = bh.space_of_state[index]
+        if a == -1
             continue
         end
         val_d = 0.0 # diagonal value
@@ -294,6 +295,7 @@ function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
 
             # 1st order
             for j in (i-1, i+1)
+                i_j = i - j # calculate before accounting for periodicity
                 if j == 0
                     !isperiodic && continue
                     j = bh.ncells
@@ -305,9 +307,9 @@ function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
                     bra = copy(state)
                     bra[j] -= 1
                     bra[i] += 1
-                    a = bh.space_of_state[bh.index_of_state[bra]]
-                    if a >= 0 # proceed only if bra is in the degenerate space
-                        val = -J * besselj(b - a, f*(i-j)) * sqrt( (state[i]+1) * state[j] )
+                    a′ = bh.space_of_state[bh.index_of_state[bra]]
+                    if a′ >= 0 # proceed only if bra is in the degenerate space
+                        val = -J * besselj(a - a′, f*i_j) * sqrt( (state[i]+1) * state[j] )
                         row = bh.index_of_state[bra]
                         push_state!(H_rows, H_cols, H_vals, val; row, col=index)
                     end
@@ -318,7 +320,13 @@ function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
                 js[1:6] .= i-1; js[7:12] .= i+1;
                 ks .= [i-2, i-1, i-1, i, i, i+1, i-1, i, i, i+1, i+1, i+2]
                 ls .= [i-1, i-2, i, i-1, i+1, i, i, i-1, i+1, i, i+2, i+1]
+                # for j in (i-1, i+1)
+                # for k = 1:bh.ncells # iterate over the terms of the Hamiltonian
+                # for l in (k-1, k+1)
+
                 for (j, k, l) in zip(js, ks, ls)
+                    i_j = i - j # calculate before accounting for periodicity
+                    k_l = k - l # calculate before accounting for periodicity
                     if j < 1
                         j = bh.ncells + j
                     elseif j > bh.ncells
@@ -342,25 +350,26 @@ function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
                         val *= √bra[l]
                         bra[l] -= 1
                         bra[k] += 1
-                        c = bh.space_of_state[bh.index_of_state[bra]]
-                        # beta = copy(bra)
                         val *= √bra[k]
+                        b = bh.space_of_state[bh.index_of_state[bra]]
+                        # beta = copy(bra)
                         val *= √bra[j]
                         bra[j] -= 1
                         bra[i] += 1
                         bra_index = bh.index_of_state[bra]
-                        a = bh.space_of_state[bra_index]
-                        if a != -1
-                            # index == 52 && println((bra, beta, state, a, b, c))
+                        a′ = bh.space_of_state[bra_index]
+                        if a′ != -1
+                            # index == 52 && println((bra, beta, state, a′, a, b))
                             val *= √bra[i]
-                            val *= (get_A!(A, U, ω, f, state[l]-state[k]-1, 0, i-j, k-l, a, b, c) +
-                                    get_A!(A, U, ω, f, bra[i]-bra[j]-1, a-b, i-j, k-l, a, b, c))
+                            val *= (get_A!(A, U, ω, f, bra[i]-bra[j]-1, a′-b, i_j, k_l, a′, a, b) +
+                                    get_A!(A, U, ω, f, state[l]-state[k]-1, a-b, i_j, k_l, a′, a, b))
                             # index == 52 && println(val)
-                            b < a && (val = conj(val))
                             push_state!(H_rows, H_cols, H_vals, val; row=bra_index, col=index)
                         end
                     end
                 end
+                # end
+                # end
             end
         end
         push_state!(H_rows, H_cols, H_vals, val_d - bh.space_of_state[index] * ω; row=index, col=index)
@@ -374,22 +383,21 @@ function push_state!(H_rows, H_cols, H_vals, val; row, col)
     push!(H_rows, row)
 end
 
-function get_A!(A, U, ω, f, nα, m, ij, kl, a, b, c)
-    key = (nα, m, ij, kl, a, b, c)
+function get_A!(A, U, ω, f, nα, d, i_j, k_l, a′, a, b)
+    key = (nα, d, i_j, k_l, a′, a, b)
     if !haskey(A, key)
         N = 20
-        n₀ = round(Int, U*nα / ω) + m
         s = 0.0
-        if c == -1
-            for n in n₀-N:n₀+N
-                s += 1/(U*nα + (m-n)*ω) * besselj(a-b-n, f*ij) * besselj(n, f*kl)
+        # ????
+        # if c == -1
+        #     for n in n₀-N:n₀+N
+        #         s += 1/(U*nα + (m-n)*ω) * besselj(a-b-n, f*i_j) * besselj(n, f*k_l)
+        #     end
+        # else
+            for n in [-N:-1; 1:N]
+                s += 1/(U*nα - (d+n)*ω) * besselj(-(a′-b+n), f*i_j) * besselj(a-b+n, f*k_l)
             end
-        else
-            for n in n₀-N:n₀+N
-                (n == 2a-b-c || n == b-c) && continue
-                s += 1/(U*nα + (m-n)*ω) * besselj(a-b-n, f*ij) * besselj(n, f*kl)
-            end
-        end
+        # end
         A[key] = s
     end
     return A[key]
