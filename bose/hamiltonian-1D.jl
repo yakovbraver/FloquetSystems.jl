@@ -274,9 +274,6 @@ function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
     (;J, U, f, ω) = bh
 
     R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
-    js = Vector{Int}(undef, 12)
-    ks = Vector{Int}(undef, 12)
-    ls = Vector{Int}(undef, 12)
     i_j = 0; k_l = 0 # for storing differences `i-j` and `k-l`
     # take each basis state and find which transitions are possible
     for (state, index) in bh.index_of_state
@@ -313,55 +310,45 @@ function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
             end
 
             if order >= 2
-                js[1:6] .= i-1; js[7:12] .= i+1;
-                ks .= [i-2, i-1, i-1, i, i, i+1, i-1, i, i, i+1, i+1, i+2]
-                ls .= [i-1, i-2, i, i-1, i+1, i, i, i-1, i+1, i, i+2, i+1]
-                # for j in (i-1, i+1)
-                # for k = 1:bh.ncells # iterate over the terms of the Hamiltonian
-                # for l in (k-1, k+1)
-
-                for (j, k, l) in zip(js, ks, ls)
+                for j in (i-1, i+1)
                     i_j = i - j # calculate before accounting for periodicity
-                    k_l = k - l
                     if j < 1
                         j = bh.ncells + j
                     elseif j > bh.ncells
                         j = j - bh.ncells
                     end
-                    if k < 1
-                        k = bh.ncells + k
-                    elseif k > bh.ncells
-                        k = k - bh.ncells
-                    end
-                    if l < 1
-                        l = bh.ncells + l
-                    elseif l > bh.ncells
-                        l = l - bh.ncells
-                    end
+                    for k = 1:bh.ncells, l in (k-1, k+1)
+                        k_l = k - l
+                        if l < 1
+                            l = bh.ncells + l
+                        elseif l > bh.ncells
+                            l = l - bh.ncells
+                        end
 
-                    # 𝑎†ᵢ 𝑎ⱼ 𝑎†ₖ 𝑎ₗ
-                    if ( state[l] > 0 && (j == k || (j == l && state[j] > 1) || (j != l && state[j] > 0)) )
-                        val = +J^2/2
-                        bra = copy(state)
-                        val *= √bra[l]
-                        bra[l] -= 1
-                        bra[k] += 1
-                        val *= √bra[k]
-                        B, b = bh.space_of_state[bh.index_of_state[bra]]
-                        val *= √bra[j]
-                        bra[j] -= 1
-                        bra[i] += 1
-                        bra_index = bh.index_of_state[bra]
-                        A′, a′ = bh.space_of_state[bra_index]
-                        val *= √bra[i]
-                        skipzero = (B == A′) || (B == A)
-                        val *= (get_R!(R, U, ω, f, bra[i]-bra[j]-1, a′-b, i_j, k_l, a′, a, b, skipzero) +
-                                get_R!(R, U, ω, f, state[l]-state[k]-1, a-b, i_j, k_l, a′, a, b, skipzero))
-                        push_state!(H_rows, H_cols, H_vals, val; row=bra_index, col=index)
+                        # 𝑎†ᵢ 𝑎ⱼ 𝑎†ₖ 𝑎ₗ
+                        if ( state[l] > 0 && (j == k || (j == l && state[j] > 1) || (j != l && state[j] > 0)) )
+                            val = +J^2/2
+                            bra = copy(state)
+                            val *= √bra[l]
+                            bra[l] -= 1
+                            bra[k] += 1
+                            val *= √bra[k]
+                            B, b = bh.space_of_state[bh.index_of_state[bra]]
+                            val *= √bra[j]
+                            bra[j] -= 1
+                            bra[i] += 1
+                            bra_index = bh.index_of_state[bra]
+                            A′, a′ = bh.space_of_state[bra_index]
+                            if A′ == A # proceed only if bra is in the same degenerate space
+                                val *= √bra[i]
+                                skipzero = (B == A)
+                                val *= (get_R!(R, U, ω, f, bra[i]-bra[j]-1, a′-b, i_j, k_l, a′, a, b, skipzero) +
+                                        get_R!(R, U, ω, f, state[l]-state[k]-1, a-b, i_j, k_l, a′, a, b, skipzero))
+                                push_state!(H_rows, H_cols, H_vals, val; row=bra_index, col=index)
+                            end
+                        end
                     end
                 end
-                # end
-                # end
             end
         end
         push_state!(H_rows, H_cols, H_vals, val_d - a*ω; row=index, col=index)
