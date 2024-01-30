@@ -1,5 +1,4 @@
-using SparseArrays, Combinatorics, SpecialFunctions
-using DifferentialEquations, FLoops
+using DifferentialEquations, SparseArrays, Combinatorics, SpecialFunctions
 using LinearAlgebra: diagind, eigvals, I
 using ProgressMeter: @showprogress
 
