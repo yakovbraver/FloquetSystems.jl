@@ -1,5 +1,4 @@
-using SparseArrays, Combinatorics, SpecialFunctions
-using DifferentialEquations, FLoops
+using DifferentialEquations, SparseArrays, Combinatorics, SpecialFunctions
 using LinearAlgebra: diagind, eigvals, I
 using ProgressMeter: @showprogress
 
@@ -22,16 +21,17 @@ mutable struct BoseHamiltonian
     H::SparseMatrixCSC{Float64, Int} # the Hamiltonian matrix
     basis_states::Vector{Vector{Int}}     # all basis states as a vector (index => state)
     index_of_state::Dict{Vector{Int},Int} # a dictionary (state => index)
+    space_of_state::Vector{Tuple{Int,Int}}    # space_of_state[i] stores the subspace number (𝐴, 𝑎) of i'th state, with 𝐴 = 0 assigned to all nondegenerate space
 end
 
 "Construct a `BoseHamiltonian` object defined on `lattice`."
-function BoseHamiltonian(J::Real, U::Real, f::Real, ω::Real, ncells::Integer, nbozons::Integer; isperiodic::Bool, order::Integer=1, type::Symbol=:smallU)
+function BoseHamiltonian(J::Real, U::Real, f::Real, ω::Real, ncells::Integer, nbozons::Integer, space_of_state::Vector{Tuple{Int,Int}}=Vector{Tuple{Int,Int}}(); isperiodic::Bool, order::Integer=1, type::Symbol=:smallU)
     nstates = binomial(nbozons+ncells-1, nbozons)
-    bh = BoseHamiltonian(float(J), float(U), float(f), float(ω), ncells, nbozons, isperiodic, type, order, spzeros(Float64, 1, 1), Vector{Vector{Int}}(undef, nstates), Dict{Vector{Int},Int}())
+    bh = BoseHamiltonian(float(J), float(U), float(f), float(ω), ncells, nbozons, isperiodic, type, order, spzeros(Float64, 1, 1), Vector{Vector{Int}}(undef, nstates), Dict{Vector{Int},Int}(), space_of_state)
     makebasis!(bh)
     if type == :smallU
         constructH_smallU!(bh, isperiodic, order)
-    else
+    elseif type == :largeU
         constructH_largeU!(bh, isperiodic, order)
     end
     bh
@@ -141,7 +141,7 @@ function constructH_smallU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
 end
 
 "Construct the Hamiltonian matrix."
-function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
+function constructH_largeU_diverging!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
     H_rows, H_cols, H_vals = Int[], Int[], Float64[]
     (;J, U, f, ω) = bh
     Jeff = J * besselj0(f)
@@ -267,10 +267,112 @@ function 𝑅(ω::Real, Un::Real, f::Real; type::Integer)
     return r
 end
 
+"Construct the Hamiltonian matrix."
+function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
+    H_rows, H_cols, H_vals = Int[], Int[], Float64[]
+    (;J, U, f, ω) = bh
+
+    R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
+    i_j = 0; k_l = 0 # for storing differences `i-j` and `k-l`
+    # take each basis state and find which transitions are possible
+    for (state, index) in bh.index_of_state
+        A, a = bh.space_of_state[index]
+        val_d = 0.0 # diagonal value
+        for i = 1:bh.ncells # iterate over the terms of the Hamiltonian
+
+            # 0th order
+            if (state[i] > 1)
+                val_d += bh.U/2 * state[i] * (state[i] - 1)
+            end
+
+            # 1st order
+            for j in (i-1, i+1)
+                i_j = i - j # calculate before accounting for periodicity
+                if j == 0
+                    !isperiodic && continue
+                    j = bh.ncells
+                elseif j == bh.ncells + 1
+                    !isperiodic && continue
+                    j = 1
+                end
+                if (state[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
+                    bra = copy(state)
+                    bra[j] -= 1
+                    bra[i] += 1
+                    A′, a′ = bh.space_of_state[bh.index_of_state[bra]]
+                    if A′ == A # proceed only if bra is in the same degenerate space
+                        val = -J * besselj(a - a′, f*i_j) * sqrt( (state[i]+1) * state[j] )
+                        row = bh.index_of_state[bra]
+                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                    end
+                end
+            end
+
+            if order >= 2
+                for j in (i-1, i+1)
+                    i_j = i - j # calculate before accounting for periodicity
+                    if j < 1
+                        j = bh.ncells + j
+                    elseif j > bh.ncells
+                        j = j - bh.ncells
+                    end
+                    for k = 1:bh.ncells, l in (k-1, k+1)
+                        k_l = k - l
+                        if l < 1
+                            l = bh.ncells + l
+                        elseif l > bh.ncells
+                            l = l - bh.ncells
+                        end
+
+                        # 𝑎†ᵢ 𝑎ⱼ 𝑎†ₖ 𝑎ₗ
+                        if ( state[l] > 0 && (j == k || (j == l && state[j] > 1) || (j != l && state[j] > 0)) )
+                            val = +J^2/2
+                            bra = copy(state)
+                            val *= √bra[l]
+                            bra[l] -= 1
+                            bra[k] += 1
+                            val *= √bra[k]
+                            B, b = bh.space_of_state[bh.index_of_state[bra]]
+                            val *= √bra[j]
+                            bra[j] -= 1
+                            bra[i] += 1
+                            bra_index = bh.index_of_state[bra]
+                            A′, a′ = bh.space_of_state[bra_index]
+                            if A′ == A # proceed only if bra is in the same degenerate space
+                                val *= √bra[i]
+                                skipzero = (B == A)
+                                val *= (get_R!(R, U, ω, f, bra[i]-bra[j]-1, a′-b, i_j, k_l, a′, a, b, skipzero) +
+                                        get_R!(R, U, ω, f, state[l]-state[k]-1, a-b, i_j, k_l, a′, a, b, skipzero))
+                                push_state!(H_rows, H_cols, H_vals, val; row=bra_index, col=index)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        push_state!(H_rows, H_cols, H_vals, val_d - a*ω; row=index, col=index)
+    end
+    bh.H = sparse(H_rows, H_cols, H_vals)
+end
+
 function push_state!(H_rows, H_cols, H_vals, val; row, col)
     push!(H_vals, val)
     push!(H_cols, col)
     push!(H_rows, row)
+end
+
+function get_R!(R, U, ω, f, nα, d, i_j, k_l, a′, a, b, skipzero)
+    key = (nα, d, i_j, k_l, a′, a, b, skipzero)
+    if !haskey(R, key)
+        N = 20
+        s = 0.0
+        nrange = skipzero ? [-N:-1; 1:N] : collect(-N:N)
+        for n in nrange
+            s += 1/(U*nα - (d+n)*ω) * besselj(-(a′-b+n), f*i_j) * besselj(a-b+n, f*k_l)
+        end
+        R[key] = s
+    end
+    return R[key]
 end
 
 """

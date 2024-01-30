@@ -3,6 +3,7 @@ includet("hamiltonian-1D.jl")
 using SparseArrays, LinearAlgebra
 using Plots, LaTeXStrings
 using BenchmarkTools, SpecialFunctions
+using ProgressMeter
 plotlyjs()
 theme(:dark, size=(800, 600))
 
@@ -21,11 +22,11 @@ function plotstate(bh::BoseHamiltonian, state::Vector{<:Number}, ε::Float64)
     display(fig)
 end
 
-nbozons = 5; ncells = 5
+nbozons = 9; ncells = 9
 binomial(nbozons+ncells-1, nbozons)
 J = 1 # setting to 1 so that `U` is measured in units of `J`
 U = 1#sqrt(1.01)
-f = 0
+f = 2
 ω = 20
 -2J * besselj0(f) * nbozons * cos(π/(ncells+1)) # non-periodic: exact ground state energy of 𝑊¹ at 𝑈 = 0; spectrum of 𝑊¹ at 𝑈 = 0 is NOT the exact quasienergy spectrum
 -2J * besselj0(f) * nbozons # periodic: exact ground state energy of 𝑊¹ at 𝑈 = 0; spectrum of 𝑊¹ at 𝑈 = 0 IS the exact quasienergy spectrum
@@ -58,37 +59,205 @@ spectrum[spectrum .< 0] .+= ω
 scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
 scatter!(Us, spectrum' .- ω, xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
 hline!([-2J * besselj0(f) *  nbozons * cos(2pi/ncells * i) for i in 1:ncells])
-f3 = title!("order=$(bh.order)")
+title!("order=$(bh.order)")
 savefig("order=2-zoom.png")
 yaxis!((-2, 2))
 yaxis!((-10.5, 10.5))
 
 # Exact quasienergy spectrum
-nbozons = 5; ncells = 5
+nbozons = 6; ncells = 6
 J = 1 # setting to 1 so that `U` is measured in units of `J`
 ω = 20
 U = 1
 f = 2
-bh = BoseHamiltonian(J, U, f, ω, ncells, nbozons, isperiodic=false, type=:smallU)
+bh = BoseHamiltonian(J, U, f, ω, ncells, nbozons, isperiodic=true, type=:smallU)
 
-Us = range(0, 1, 2)
-ε = quasienergy(bh, Us)
+Us = range(19, 21, 2)
+@time ε = quasienergy(bh, Us);
 minimum(ε[:, 1])
 
 gr()
-scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f"*", exact", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native)
-scatter!(Us, ε' .+ 20, xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$(F/ω)", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native)
-scatter!(Us, ε' .- 20, xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$(F/ω)", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native)
-ylims!(-20, 20)
+fig = scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f"*", exact", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
+scatter!(Us, ε' .+ 20, xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
+scatter!(Us, ε' .- 20, xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
+ylims!(-10, 10)
 title!(L"F/\omega=%$(F/ω)"*", exact")
 savefig("exact-zoom2.png")
 ylims!(-2, 2)
 vline!([40/3], c=:white)
-plot!(minorgird=true, minorticks=5, minorgridalpha=1)
+
+u = 100
+fig1 = scatter(sort(ε[:, u]), xlabel=L"U/J", ylabel=L"\varepsilon/J", title="exact", markersize=1, markerstrokewidth=0, c=1, legend=false, ticks=:native)
+scatter!(spectrum[:, u], xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=1, markerstrokewidth=0, c=3, legend=false, ticks=:native)
+sp2 = copy(spectrum)
 
 using DelimitedFiles
-ε = readdlm("spectrum_F10.txt")
+ε = readdlm("f2_U20.txt")
 
-open("f2_U12-15.txt", "w") do io
-    writedlm(io, ε)
+# open("f2_U13-block.txt", "w") do io
+#     writedlm(io, ε)
+# end
+
+# degenerate theory
+
+nbozons = 8; ncells = 8
+nstates = binomial(nbozons+ncells-1, nbozons)
+J = 1 # setting to 1 so that `U` is measured in units of `J`
+f = 2
+ω = 20
+
+U₀ = ω * 2/3
+E_D₀ = [0, U₀, 2U₀]
+
+U₀ = ω
+E_D₀ = [0]
+
+# construct a "blank" BH to get basis states, and calculate the zeroth-order spectrum
+bh = BoseHamiltonian(J, U₀, f, ω, ncells, nbozons, isperiodic=true, type=:none, order=2)
+E₀ = zeros(nstates)
+for (index, state) in enumerate(bh.basis_states)
+    for i = 1:bh.ncells # iterate over the terms of the Hamiltonian
+        if (state[i] > 1)
+            E₀[index] += bh.U/2 * state[i] * (state[i] - 1)
+        end
+    end
 end
+scatter(E₀)
+range6U = (findfirst(==(6U₀), E₀), findlast(==(6U₀), E₀)) # range of states of energy 6U
+
+# space_of_state[i] stores the subspace number (𝐴, 𝑎) of i'th state, with (0, 0) assigned to all nondegenerate space 
+space_of_state = map(E₀) do E
+    for A in eachindex(E_D₀)
+        M = (E - E_D₀[A]) / ω
+        M_int = round(Int, M)
+        if isapprox(M, M_int, atol=0.01)
+            return (A, M_int)
+        end
+    end
+    return (-1, -1) # this basically signifies a mistake in user's choice of `E_D₀`
+end
+
+scatter!(1:nstates, i -> space_of_state[i][2])
+plot!(legend=false)
+bh = BoseHamiltonian(J, U₀, f, ω, ncells, nbozons, space_of_state, isperiodic=true, type=:largeU, order=2);
+
+e0 = bh.H[1,1]
+e3 = bh.H[c03[1], c03[1]]
+c = bh.H[1, c03[1]]
+sqrt((e0-e3)^2+4ncells*c^2)
+
+M = copy(bh.H);
+N = copy(bh.H);
+M[diagind(M)] .= 0;
+N[diagind(M)] .= 0;
+M[52:81, 102:121] .= 0
+M[102:121, 52:81] .= 0
+d = M[diagind(M)]
+M[52:81, 52:81] .= 0
+M[diagind(M)] .= d
+f2 = heatmap(abs.(bh.H), yaxis=:flip, c=:viridis)
+f2 = heatmap(abs.(M), yaxis=:flip, c=:viridis)
+plot(bh.H[diagind(bh.H)])
+
+
+As = findall(s -> s[1] == 1, space_of_state) # As[i] gives the number of state that belongs to space A
+h = zeros(length(As), length(As)) # reduced matrix of the subspace of interest
+spectrum = Matrix{Float64}(undef, length(As), nU)
+scatter(bh.H[diagind(bh.H)][As], markersize=0.5, markerstrokewidth=0)
+
+c03 = findall(abs.(bh.H[1, :]) .> 0)[2:end] # numbers of states which ground state is coupled to
+c36 = findall(abs.(bh.H[c03[1], range6U[1]:range6U[2]]) .> 0) .+ range6U[1] .- 1 # numbers of states from 6U manifold which states 3U is coupled to
+bh.H[c36[1], c36[1]]
+bh.H[c03[1], c36[1]]
+bh.basis_states[c03]
+R = zeros(1+length(c03)+length(c36), 1+length(c03)+length(c36)) # isolated matrix
+R[1, 1] = bh.H[1, 1]
+R[1, range(2, length=length(c03))] .= bh.H[1, c03]
+R[diagind(R)[range(2, length=length(c03))]] .= bh.H[c03[1], c03[1]]
+R[1, length(c03)+1:end] .= bh.H[1, c03]
+spectrum = Matrix{Float64}(undef, ncells+1, nU)
+
+nU = 300 # 46 s for N=7; eigvals takes the main time
+spectrum = Matrix{Float64}(undef, nstates, nU)
+Us = range(U₀-1, U₀+1, nU)
+Us = range(12.5, 14.5, nU)
+
+n_isol = 5
+spectrum = Matrix{Float64}(undef, n_isol, nU)
+
+@showprogress for (iU, U) in enumerate(Us)
+    bh = BoseHamiltonian(J, U, f, ω, ncells, nbozons, space_of_state, isperiodic=true, type=:largeU, order=2)
+    # spectrum[:, iU] = eigvals(Symmetric(Matrix(bh.H)))
+
+    for i in eachindex(As), j in i:length(As)
+        h[j, i] = bh.H[As[j], As[i]]
+    end
+    # spectrum[:, iU] = eigvals(Symmetric(h, :L))
+
+    e, S = eigen(Symmetric(h, :L))
+    sp = sortperm(S[1, :], rev=true)
+    spectrum[:, iU] = e[sp[1:n_isol]]
+
+
+    # M = Matrix(bh.H)
+    # M[52:81, 102:121] .= 0
+    # M[102:121, 52:81] .= 0
+    # d = M[diagind(M)]
+    # M[52:81, 52:81] .= 0
+    # M[diagind(M)] .= d
+    # spectrum[:, iU] = eigvals(Symmetric(M))
+
+    # R[1, 1] = bh.H[1, 1]
+    # R[1, 2:end] .= bh.H[1, c03[1]]
+    # R[diagind(R)[2:end]] .= bh.H[c03[1], c03[1]]
+    # spectrum[:, iU] = eigvals(Symmetric(R))
+end
+
+gr()
+plotlyjs()
+spectrum .%= ω
+spectrum[spectrum .< 0] .+= ω
+fig = scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
+scatter!(Us, (spectrum .- 20)', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
+ylims!(-3, 3.5);
+ylims!(-2, 2)
+ylims!(-10, 10)
+title!(L"N=%$ncells"*", isolated")
+plot!(xlims=(U₀-1, U₀+1), ylims=(-2, 2), title="isolated")
+# plot!(xlims=(U₀-1, U₀+1), ylims=(-2, 2), title=L"\langle 3|W|6\rangle = \langle 3|W|3\rangle = 0")
+xlims!(19, 21)
+vline!([U₀], c=:white)
+plot!(fo2, ylabel="")
+
+plot(full, no6, no36, isol)
+savefig("N=$ncells-isolated.png")
+
+sp = Matrix{Float64}(undef, 2(ncells+1), nU)
+sp[1:9, :] .= spectrum
+sp[10:18, :] .= spectrum .- 20
+diffs = zeros(nU)
+for (i, col) in enumerate(eachcol(sp))
+    ext = extrema(col)
+    diffs[i] = ext[2] - ext[1]
+end
+plot(Us, diffs)
+fig = scatter(Us, sp', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false)
+for i in eachindex(sp)
+    if sp[i] < -5 || sp[i] > 10
+        sp[i] = 1
+    end
+end
+
+using DelimitedFiles
+Us = range(12, 15, 1000)
+ε = readdlm("f2_U12-15.txt")
+# Us = range(0, 45, 1000)
+# ε = readdlm("f2_U45.txt")
+
+fig = scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, title="exact", widen=false)
+plot!(fig, ylims=(-2, 2), xlims=(U₀-1, U₀+1))
+
+plot(fig, fo2, fo1, layout=(1, 3), link=:y)
+savefig("resonance13_zoom1.png")
+
+-1/ω * sum(besselj(n, f)^2/(2/3+n) for n in -20:20) * 2ncells
