@@ -4,43 +4,82 @@ using ProgressMeter: @showprogress
 
 import Base.show
 
+"A type representing a quantum lattice. Geometry is square, and can be both 1D and 2D."
+struct Lattice
+    ncells::Int
+    nbozons::Int
+    dims::Tuple{Int,Int}
+    isperiodic::Bool    # periodicity is allowed only along dimensions whose length is larger than 2
+    basis_states::Vector{Vector{Int}}     # all basis states as a vector (index => state)
+    index_of_state::Dict{Vector{Int},Int} # a dictionary (state => index)
+    neis_of_cell::Vector{Vector{Tuple{Int,Int}}} # neis_of_cell[i][j] = (<cell number of j'th neighbour of i'th cell>, <-1 if neigbour is below or on the right; +1 otherwise>)
+end
+
+"Construct a `Lattice` object."
+function Lattice(;dims::Tuple{Int,Int}, nbozons::Integer, isperiodic::Bool)
+    ncells = prod(dims)
+    nstates = binomial(nbozons+ncells-1, nbozons)
+    lattice = Lattice(ncells, nbozons, dims, isperiodic, Vector{Vector{Int}}(undef, nstates), Dict{Vector{Int},Int}(), Vector{Vector{Tuple{Int,Int}}}(undef, nstates))
+    makebasis!(lattice)
+    makeneis!(lattice)
+    return lattice
+end
+
+"Fill `lattice.neis_of_cell`."
+function makeneis!(lattice::Lattice)
+    nrows, ncols = lattice.dims
+    for cell in 0:lattice.ncells-1 # 0-based index
+        row = cell ÷ ncols # 0-based index
+        col = cell % ncols # 0-based index
+        neis = Tuple{Int,Int,Int}[]
+        if row > 0 || (lattice.isperiodic && nrows > 2) # neigbour above
+            push!(neis, (rem(row-1, nrows, RoundDown), col, +1))
+        end
+        if col < ncols - 1 || (lattice.isperiodic && ncols > 2) # neigbour to the right
+            push!(neis, (row, (col+1)%ncols, -1))
+        end
+        if row < nrows - 1 || (lattice.isperiodic && nrows > 2) # neigbour below
+            push!(neis, ((row+1)%nrows, col, -1))
+        end
+        if col > 0 || (lattice.isperiodic && ncols > 2) # neigbour to the left
+            push!(neis, (row, rem(col-1, ncols, RoundDown), +1))
+        end
+        lattice.neis_of_cell[cell+1] = map(x -> (x[2] + x[1]*ncols + 1, x[3]), neis) # convert to cell numbers; `+1` converts to 1-based index
+    end
+end
+
 """
 A type representing a Bose-Hubbard Hamiltonian,
     H = - ∑ 𝐽ᵢⱼ 𝑎†ᵢ 𝑎ⱼ, + 𝑈/2 ∑ 𝑛ᵢ(𝑛ᵢ - 1).
 """
 mutable struct BoseHamiltonian
+    lattice::Lattice
     J::Float64
     U::Float64
     f::Float64 # F / ω
     ω::Real
-    ncells::Int
-    nbozons::Int
-    isperiodic::Bool
     type::Symbol
     order::Int
-    H::SparseMatrixCSC{Float64, Int} # the Hamiltonian matrix
-    basis_states::Vector{Vector{Int}}     # all basis states as a vector (index => state)
-    index_of_state::Dict{Vector{Int},Int} # a dictionary (state => index)
     space_of_state::Vector{Tuple{Int,Int}}    # space_of_state[i] stores the subspace number (𝐴, 𝑎) of i'th state, with 𝐴 = 0 assigned to all nondegenerate space
+    H::SparseMatrixCSC{Float64, Int} # the Hamiltonian matrix
 end
 
 "Construct a `BoseHamiltonian` object defined on `lattice`."
-function BoseHamiltonian(J::Real, U::Real, f::Real, ω::Real, ncells::Integer, nbozons::Integer, space_of_state::Vector{Tuple{Int,Int}}=Vector{Tuple{Int,Int}}(); isperiodic::Bool, order::Integer=1, type::Symbol=:smallU)
-    nstates = binomial(nbozons+ncells-1, nbozons)
-    bh = BoseHamiltonian(float(J), float(U), float(f), float(ω), ncells, nbozons, isperiodic, type, order, spzeros(Float64, 1, 1), Vector{Vector{Int}}(undef, nstates), Dict{Vector{Int},Int}(), space_of_state)
-    makebasis!(bh)
+function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, space_of_state::Vector{Tuple{Int,Int}}=Vector{Tuple{Int,Int}}(); order::Integer=1, type::Symbol=:smallU)
+    bh = BoseHamiltonian(lattice, float(J), float(U), float(f), float(ω), type, order, space_of_state, spzeros(Float64, 1, 1))
     if type == :smallU
-        constructH_smallU!(bh, isperiodic, order)
+        constructH_smallU!(bh, order)
     elseif type == :largeU
-        constructH_largeU!(bh, isperiodic, order)
+        constructH_largeU!(bh, order)
     end
     bh
 end
 
 "Construct the Hamiltonian matrix."
-function constructH_smallU!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
-    H_rows, H_cols, H_vals = Int[], Int[], Float64[]
+function constructH_smallU!(bh::BoseHamiltonian, order::Integer)
     (;J, U, f, ω) = bh
+    (;index_of_state, ncells, neis_of_cell) = bh.lattice
+    H_rows, H_cols, H_vals = Int[], Int[], Float64[]
     Jeff = J * besselj0(f)
 
     J_sum = [0.0, 0.0]
@@ -51,48 +90,27 @@ function constructH_smallU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
     end
 
     # take each basis state and find which transitions are possible
-    for (state, index) in bh.index_of_state
+    for (state, index) in index_of_state
         val_d = 0.0 # diagonal value
-        for i = 1:bh.ncells # iterate over the terms of the Hamiltonian
+        for i = 1:ncells # iterate over the terms of the Hamiltonian
             # 𝑛ᵢ(𝑛ᵢ - 1)
             if (state[i] > 1)
-                val_d += bh.U/2 * state[i] * (state[i] - 1)
+                val_d += U/2 * state[i] * (state[i] - 1)
             end
             # 𝑎†ᵢ 𝑎ⱼ
-            for j in (i-1, i+1)
-                if j == 0
-                    !isperiodic && continue
-                    j = bh.ncells
-                elseif j == bh.ncells + 1
-                    !isperiodic && continue
-                    j = 1
-                end
+            for (j, _) in neis_of_cell[i]
                 if (state[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
                     val = -Jeff * sqrt( (state[i]+1) * state[j] )
                     bra = copy(state)
                     bra[j] -= 1
                     bra[i] += 1
-                    row = bh.index_of_state[bra]
+                    row = index_of_state[bra]
                     push_state!(H_rows, H_cols, H_vals, val; row, col=index)
                 end
             end
 
             if order == 2
-                for j in (i-1, i+1), k in (i-1, i+1)
-                    if j == 0
-                        !isperiodic && continue
-                        j = bh.ncells
-                    elseif j == bh.ncells + 1
-                        !isperiodic && continue
-                        j = 1
-                    end
-                    if k == 0
-                        !isperiodic && continue
-                        k = bh.ncells
-                    elseif k == bh.ncells + 1
-                        !isperiodic && continue
-                        k = 1
-                    end
+                for (j, _) in neis_of_cell[i], (k, _) in neis_of_cell[i]
                     C₁, C₂ = j == k ? J_sum : (J_sum[2], J_sum[1])
                     # 𝑎†ₖ (2𝑛ᵢ - 𝑛ⱼ) 𝑎ⱼ
                     if (state[j] > 0 && state[i] != state[j]-1)
@@ -100,7 +118,7 @@ function constructH_smallU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
                         bra = copy(state)
                         bra[j] -= 1
                         bra[k] += 1
-                        row = bh.index_of_state[bra]
+                        row = index_of_state[bra]
                         push_state!(H_rows, H_cols, H_vals, val; row, col=index)
                     end
                     # 𝑎†ⱼ (2𝑛ᵢ - 𝑛ⱼ) 𝑎ₖ
@@ -109,7 +127,7 @@ function constructH_smallU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
                         bra = copy(state)
                         bra[k] -= 1
                         bra[j] += 1
-                        row = bh.index_of_state[bra]
+                        row = index_of_state[bra]
                         push_state!(H_rows, H_cols, H_vals, val; row, col=index)
                     end
                     # 𝑎†ᵢ 𝑎†ᵢ 𝑎ₖ 𝑎ⱼ
@@ -119,7 +137,7 @@ function constructH_smallU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
                         bra[j] -= 1
                         bra[k] -= 1
                         bra[i] += 2
-                        row = bh.index_of_state[bra]
+                        row = index_of_state[bra]
                         push_state!(H_rows, H_cols, H_vals, val; row, col=index)
                     end
                     # 𝑎†ₖ 𝑎†ⱼ 𝑎ᵢ 𝑎ᵢ
@@ -129,7 +147,7 @@ function constructH_smallU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
                         bra[i] -= 2
                         bra[j] += 1
                         bra[k] += 1
-                        row = bh.index_of_state[bra]
+                        row = index_of_state[bra]
                         push_state!(H_rows, H_cols, H_vals, val; row, col=index)
                     end
                 end
@@ -140,14 +158,15 @@ function constructH_smallU!(bh::BoseHamiltonian, isperiodic::Bool, order::Intege
     bh.H = sparse(H_rows, H_cols, H_vals)
 end
 
-"Construct the Hamiltonian matrix."
-function constructH_largeU_diverging!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
+"Construct the Hamiltonian matrix for the degenerate case but without DPT. Will work only in 1D, not tested."
+function constructH_largeU_diverging!(bh::BoseHamiltonian, order::Integer)
     H_rows, H_cols, H_vals = Int[], Int[], Float64[]
     (;J, U, f, ω) = bh
+    (;index_of_state, ncells, nbozons, neis_of_cell) = bh.lattice
     Jeff = J * besselj0(f)
 
-    n_max = bh.nbozons - 1
-    n_min = -bh.nbozons - 1
+    n_max = nbozons - 1
+    n_min = -nbozons - 1
     R1 = Dict{Int64, Real}()
     R2 = Dict{Int64, Real}()
     for n in n_min:n_max
@@ -159,20 +178,20 @@ function constructH_largeU_diverging!(bh::BoseHamiltonian, isperiodic::Bool, ord
     ks = Vector{Int}(undef, 12)
     ls = Vector{Int}(undef, 12)
     # take each basis state and find which transitions are possible
-    for (state, index) in bh.index_of_state
+    for (state, index) in index_of_state
         val_d = 0.0 # diagonal value
-        for i = 1:bh.ncells # iterate over the terms of the Hamiltonian
+        for i = 1:ncells # iterate over the terms of the Hamiltonian
             # 𝑛ᵢ(𝑛ᵢ - 1)
             if (state[i] > 1)
-                val_d += bh.U/2 * state[i] * (state[i] - 1)
+                val_d += U/2 * state[i] * (state[i] - 1)
             end
             # 𝑎†ᵢ 𝑎ⱼ
             for j in (i-1, i+1)
                 if j == 0
-                    !isperiodic && continue
-                    j = bh.ncells
-                elseif j == bh.ncells + 1
-                    !isperiodic && continue
+                    !bh.lattice.isperiodic && continue
+                    j = ncells
+                elseif j == ncells + 1
+                    !bh.lattice.isperiodic && continue
                     j = 1
                 end
                 if (state[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
@@ -180,7 +199,7 @@ function constructH_largeU_diverging!(bh::BoseHamiltonian, isperiodic::Bool, ord
                     bra = copy(state)
                     bra[j] -= 1
                     bra[i] += 1
-                    row = bh.index_of_state[bra]
+                    row = index_of_state[bra]
                     push_state!(H_rows, H_cols, H_vals, val; row, col=index)
                 end
             end
@@ -191,19 +210,19 @@ function constructH_largeU_diverging!(bh::BoseHamiltonian, isperiodic::Bool, ord
             if order == 2
                 for (j, k, l) in zip(js, ks, ls)
                     if j < 1
-                        j = bh.ncells + j
-                    elseif j > bh.ncells
-                        j = j - bh.ncells
+                        j = ncells + j
+                    elseif j > ncells
+                        j = j - ncells
                     end
                     if k < 1
-                        k = bh.ncells + k
-                    elseif k > bh.ncells
-                        k = k - bh.ncells
+                        k = ncells + k
+                    elseif k > ncells
+                        k = k - ncells
                     end
                     if l < 1
-                        l = bh.ncells + l
-                    elseif l > bh.ncells
-                        l = l - bh.ncells
+                        l = ncells + l
+                    elseif l > ncells
+                        l = l - ncells
                     end
 
                     # 𝑎†ᵢ 𝑎ⱼ [𝑏𝜔+𝑈(𝑛ₖ-𝑛ₗ-1)]⁻¹ 𝑎†ₖ 𝑎ₗ
@@ -219,7 +238,7 @@ function constructH_largeU_diverging!(bh::BoseHamiltonian, isperiodic::Bool, ord
                         bra[j] -= 1
                         bra[i] += 1
                         val *= √bra[i]
-                        row = bh.index_of_state[bra]
+                        row = index_of_state[bra]
                         push_state!(H_rows, H_cols, H_vals, val; row, col=index)
                     end
 
@@ -236,7 +255,7 @@ function constructH_largeU_diverging!(bh::BoseHamiltonian, isperiodic::Bool, ord
                         bra[l] -= 1
                         bra[k] += 1
                         val *= R[bra[k] - bra[l] - 1] * √bra[k]
-                        row = bh.index_of_state[bra]
+                        row = index_of_state[bra]
                         push_state!(H_rows, H_cols, H_vals, val; row, col=index)
                     end
                 end
@@ -268,89 +287,68 @@ function 𝑅(ω::Real, Un::Real, f::Real; type::Integer)
 end
 
 "Construct the Hamiltonian matrix."
-function constructH_largeU!(bh::BoseHamiltonian, isperiodic::Bool, order::Integer)
+function constructH_largeU!(bh::BoseHamiltonian, order::Integer)
     H_rows, H_cols, H_vals = Int[], Int[], Float64[]
-    (;J, U, f, ω) = bh
+    (;index_of_state, ncells, neis_of_cell) = bh.lattice
+    (;J, U, f, ω, space_of_state) = bh
 
     R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
-    i_j = 0; k_l = 0 # for storing differences `i-j` and `k-l`
     # take each basis state and find which transitions are possible
-    for (state, index) in bh.index_of_state
-        A, a = bh.space_of_state[index]
+    for (ket, ket_index) in index_of_state
+        A, a = space_of_state[ket_index]
         val_d = 0.0 # diagonal value
-        for i = 1:bh.ncells # iterate over the terms of the Hamiltonian
+        for i = 1:ncells # iterate over the terms of the Hamiltonian
 
             # 0th order
-            if (state[i] > 1)
-                val_d += bh.U/2 * state[i] * (state[i] - 1)
+            if (ket[i] > 1)
+                val_d += U/2 * ket[i] * (ket[i] - 1)
             end
 
             # 1st order
-            for j in (i-1, i+1)
-                i_j = i - j # calculate before accounting for periodicity
-                if j == 0
-                    !isperiodic && continue
-                    j = bh.ncells
-                elseif j == bh.ncells + 1
-                    !isperiodic && continue
-                    j = 1
-                end
-                if (state[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
-                    bra = copy(state)
+            for (j, i_j) in neis_of_cell[i]
+                if (ket[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
+                    bra = copy(ket)
                     bra[j] -= 1
                     bra[i] += 1
-                    A′, a′ = bh.space_of_state[bh.index_of_state[bra]]
+                    A′, a′ = space_of_state[index_of_state[bra]]
                     if A′ == A # proceed only if bra is in the same degenerate space
-                        val = -J * besselj(a - a′, f*i_j) * sqrt( (state[i]+1) * state[j] )
-                        row = bh.index_of_state[bra]
-                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                        val = -J * besselj(a - a′, f*i_j) * sqrt( (ket[i]+1) * ket[j] )
+                        row = index_of_state[bra]
+                        push_state!(H_rows, H_cols, H_vals, val; row, col=ket_index)
                     end
                 end
             end
 
             if order >= 2
-                for j in (i-1, i+1)
-                    i_j = i - j # calculate before accounting for periodicity
-                    if j < 1
-                        j = bh.ncells + j
-                    elseif j > bh.ncells
-                        j = j - bh.ncells
-                    end
-                    for k = 1:bh.ncells, l in (k-1, k+1)
-                        k_l = k - l
-                        if l < 1
-                            l = bh.ncells + l
-                        elseif l > bh.ncells
-                            l = l - bh.ncells
-                        end
-
+                for (j, i_j) in neis_of_cell[i]
+                    for k = 1:ncells, (l, k_l) in neis_of_cell[k]
                         # 𝑎†ᵢ 𝑎ⱼ 𝑎†ₖ 𝑎ₗ
-                        if ( state[l] > 0 && (j == k || (j == l && state[j] > 1) || (j != l && state[j] > 0)) )
+                        if ( ket[l] > 0 && (j == k || (j == l && ket[j] > 1) || (j != l && ket[j] > 0)) )
                             val = +J^2/2
-                            bra = copy(state)
+                            bra = copy(ket)
                             val *= √bra[l]
                             bra[l] -= 1
                             bra[k] += 1
                             val *= √bra[k]
-                            B, b = bh.space_of_state[bh.index_of_state[bra]]
+                            B, b = space_of_state[index_of_state[bra]]
                             val *= √bra[j]
                             bra[j] -= 1
                             bra[i] += 1
-                            bra_index = bh.index_of_state[bra]
-                            A′, a′ = bh.space_of_state[bra_index]
+                            bra_index = index_of_state[bra]
+                            A′, a′ = space_of_state[bra_index]
                             if A′ == A # proceed only if bra is in the same degenerate space
                                 val *= √bra[i]
                                 skipzero = (B == A)
                                 val *= (get_R!(R, U, ω, f, bra[i]-bra[j]-1, a′-b, i_j, k_l, a′, a, b, skipzero) +
-                                        get_R!(R, U, ω, f, state[l]-state[k]-1, a-b, i_j, k_l, a′, a, b, skipzero))
-                                push_state!(H_rows, H_cols, H_vals, val; row=bra_index, col=index)
+                                        get_R!(R, U, ω, f, ket[l]-ket[k]-1, a-b, i_j, k_l, a′, a, b, skipzero))
+                                push_state!(H_rows, H_cols, H_vals, val; row=bra_index, col=ket_index)
                             end
                         end
                     end
                 end
             end
         end
-        push_state!(H_rows, H_cols, H_vals, val_d - a*ω; row=index, col=index)
+        push_state!(H_rows, H_cols, H_vals, val_d - a*ω; row=ket_index, col=ket_index)
     end
     bh.H = sparse(H_rows, H_cols, H_vals)
 end
@@ -377,17 +375,17 @@ end
 
 """
 Generate all possible combinations of placing the bozons in the lattice.
-Populate `bh.basis_states` and `bh.index_of_state`.
+Populate `lattice.basis_states` and `lattice.index_of_state`.
 """
-function makebasis!(bh::BoseHamiltonian)
+function makebasis!(lattice::Lattice)
     index = 1 # unique index identifying the state
-    (;ncells, nbozons) = bh
+    (;ncells, nbozons) = lattice
     for partition in integer_partitions(nbozons)
         length(partition) > ncells && continue # Example (nbozons = 3, ncells = 2): partition = [[3,0], [2,1], [1,1,1]] -- skip [1,1,1] as impossible
         append!(partition, zeros(ncells-length(partition)))
         for p in multiset_permutations(partition, ncells)
-            bh.index_of_state[p] = index
-            bh.basis_states[index] = p
+            lattice.index_of_state[p] = index
+            lattice.basis_states[index] = p
             index += 1
         end
     end
@@ -397,7 +395,7 @@ end
 function Base.show(io::IO, bh::BoseHamiltonian)
     H_rows, H_cols, H_vals = findnz(bh.H)
     for (i, j, val) in zip(H_rows, H_cols, H_vals) # iterate over the terms of the Hamiltonian
-        println(io, bh.basis_states[i], " Ĥ ", bh.basis_states[j], " = ", round(val, sigdigits=3))
+        println(io, bh.lattice.basis_states[i], " Ĥ ", bh.lattice.basis_states[j], " = ", round(val, sigdigits=3))
     end
 end
 
@@ -405,27 +403,21 @@ end
 function quasienergy(bh::BoseHamiltonian, Us::AbstractVector{<:Real})
     H_rows, H_cols, H_vals = Int[], Int[], ComplexF64[]
     H_sign = Int[] # stores the sign of the tunneling phase for each off-diagonal element
-    (;J, f, ω, isperiodic) = bh
+    (;J, f, ω) = bh
+    (;index_of_state, ncells, neis_of_cell) = bh.lattice
 
     # Construct the Hamiltonian with `f` = 0 and `U` = 1
     # off-diagonal elements 𝑎†ᵢ 𝑎ⱼ
-    for (state, index) in bh.index_of_state
-        for i = 1:bh.ncells # iterate over the terms of the Hamiltonian
-            for (j, s) in zip((i-1, i+1), (-1, 1))
-                if j == 0
-                    !isperiodic && continue
-                    j = bh.ncells
-                elseif j == bh.ncells + 1
-                    !isperiodic && continue
-                    j = 1
-                end
+    for (state, index) in index_of_state
+        for i = 1:ncells # iterate over the terms of the Hamiltonian
+            for (j, s) in neis_of_cell[i]
                 # 𝑎†ᵢ 𝑎ⱼ
                 if (state[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
                     val = -im * -J * sqrt( (state[i]+1) * state[j] ) # multiply by `-im` as in the rhs of ∂ₜ𝜓 = -i𝐻𝜓
                     bra = copy(state)
                     bra[j] -= 1
                     bra[i] += 1
-                    row = bh.index_of_state[bra]
+                    row = index_of_state[bra]
                     push_state!(H_rows, H_cols, H_vals, val; row, col=index)
                     push!(H_sign, s)
                 end
@@ -434,9 +426,9 @@ function quasienergy(bh::BoseHamiltonian, Us::AbstractVector{<:Real})
     end
     # diagonal elements 𝑛ᵢ(𝑛ᵢ - 1)
     U = 1
-    for (state, index) in bh.index_of_state
+    for (state, index) in index_of_state
         val = 0.0
-        for i = 1:bh.ncells
+        for i = 1:ncells
             if (state[i] > 1)
                 val += -im * U/2 * state[i] * (state[i] - 1) # multiply by `-im` as in the rhs of ∂ₜ𝜓 = -i𝐻𝜓
             end
@@ -444,14 +436,13 @@ function quasienergy(bh::BoseHamiltonian, Us::AbstractVector{<:Real})
         push_state!(H_rows, H_cols, H_vals, val; row=index, col=index)
     end
 
-    n_levels = size(bh.H, 1)
+    nstates = size(bh.H, 1) # change to nstates
     n_U = length(Us)
-    ε = Matrix{Float64}(undef, n_levels, n_U)
-    C₀ = Matrix{ComplexF64}(I, n_levels, n_levels)
+    ε = Matrix{Float64}(undef, nstates, n_U)
+    C₀ = Matrix{ComplexF64}(I, nstates, nstates)
     
     T = 2π / ω
     tspan = (0.0, T)
-    nstates = binomial(bh.nbozons+bh.ncells-1, bh.nbozons)
     H_vals_U = copy(H_vals) # `H_vals_U` will be mutated depending on `U`
     @showprogress for (i, U) in enumerate(Us)
         H_vals_U[end-nstates+1:end] .= U .* H_vals[end-nstates+1:end] # update last `nstates` values in `H_vals_U` -- these are diagonal elements of the Hamiltonian

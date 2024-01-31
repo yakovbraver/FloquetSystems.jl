@@ -22,15 +22,16 @@ function plotstate(bh::BoseHamiltonian, state::Vector{<:Number}, ε::Float64)
     display(fig)
 end
 
-nbozons = 9; ncells = 9
-binomial(nbozons+ncells-1, nbozons)
+nbozons = 5; ncells = 5
+lattice = Lattice(;dims=(1, ncells), nbozons, isperiodic=true)
+nstates = binomial(nbozons+ncells-1, nbozons)
 J = 1 # setting to 1 so that `U` is measured in units of `J`
 U = 1#sqrt(1.01)
 f = 2
 ω = 20
 -2J * besselj0(f) * nbozons * cos(π/(ncells+1)) # non-periodic: exact ground state energy of 𝑊¹ at 𝑈 = 0; spectrum of 𝑊¹ at 𝑈 = 0 is NOT the exact quasienergy spectrum
 -2J * besselj0(f) * nbozons # periodic: exact ground state energy of 𝑊¹ at 𝑈 = 0; spectrum of 𝑊¹ at 𝑈 = 0 IS the exact quasienergy spectrum
-@time bh = BoseHamiltonian(J, U, f, ω, ncells, nbozons, isperiodic=false, type=:smallU, order=1)
+@time bh = BoseHamiltonian(lattice, J, U, f, ω, type=:smallU, order=1);
 # @time vals, vecs, info = eigsolve(bh.H, 100, krylovdim=126, :SR)
 vals, vecs = eigen(Symmetric(Matrix(bh.H)))
 scatter(vals, xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"f=%$f", markersize=2, markerstrokewidth=0, c=2, legend=false, ticks=:native)
@@ -41,12 +42,11 @@ M[diagind(M)] .= 0
 heatmap(M, yaxis=:flip, c=:coolwarm)
 heatmap(bh.H, yaxis=:flip, c=:coolwarm)
 
-nvals = binomial(nbozons+ncells-1, nbozons)
 nU = 1000
-spectrum = Matrix{Float64}(undef, nvals, nU)
-Us = range(0, 5, nU) #.* √1.01
+spectrum = Matrix{Float64}(undef, nstates, nU)
+Us = range(0, 20, nU) #.* √1.01
 for (iU, U) in enumerate(Us)
-    bh = BoseHamiltonian(J, U, f, ω, ncells, nbozons, isperiodic=false, type=:smallU, order=2)
+    bh = BoseHamiltonian(lattice, J, U, f, ω, type=:smallU, order=2)
     # vals, vecs, info = eigsolve(bh.H, nvals, krylovdim=nvals, :SR)
     # spectrum[:, iU] = vals[1:nvals]
     spectrum[:, iU] = eigvals(Symmetric(Matrix(bh.H)))
@@ -65,15 +65,15 @@ yaxis!((-2, 2))
 yaxis!((-10.5, 10.5))
 
 # Exact quasienergy spectrum
-nbozons = 6; ncells = 6
+nbozons = 5; ncells = 5
 J = 1 # setting to 1 so that `U` is measured in units of `J`
 ω = 20
 U = 1
 f = 2
-bh = BoseHamiltonian(J, U, f, ω, ncells, nbozons, isperiodic=true, type=:smallU)
+bh = BoseHamiltonian(lattice, J, U, f, ω, type=:smallU)
 
-Us = range(19, 21, 2)
-@time ε = quasienergy(bh, Us);
+Us = range(19, 21, 200)
+ε = quasienergy(bh, Us);
 minimum(ε[:, 1])
 
 gr()
@@ -92,7 +92,7 @@ scatter!(spectrum[:, u], xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=1, m
 sp2 = copy(spectrum)
 
 using DelimitedFiles
-ε = readdlm("f2_U20.txt")
+ε_old = readdlm("f2_U19-21.txt")
 
 # open("f2_U13-block.txt", "w") do io
 #     writedlm(io, ε)
@@ -100,7 +100,7 @@ using DelimitedFiles
 
 # degenerate theory
 
-nbozons = 8; ncells = 8
+nbozons = 7; ncells = 7
 nstates = binomial(nbozons+ncells-1, nbozons)
 J = 1 # setting to 1 so that `U` is measured in units of `J`
 f = 2
@@ -112,20 +112,20 @@ E_D₀ = [0, U₀, 2U₀]
 U₀ = ω
 E_D₀ = [0]
 
-# construct a "blank" BH to get basis states, and calculate the zeroth-order spectrum
-bh = BoseHamiltonian(J, U₀, f, ω, ncells, nbozons, isperiodic=true, type=:none, order=2)
+# construct the lattice to get basis states, and calculate the zeroth-order spectrum (for U = U₀)
+lattice = Lattice(;dims=(1, ncells), nbozons, isperiodic=true)
 E₀ = zeros(nstates)
-for (index, state) in enumerate(bh.basis_states)
-    for i = 1:bh.ncells # iterate over the terms of the Hamiltonian
+for (index, state) in enumerate(lattice.basis_states)
+    for i = 1:ncells # iterate over the terms of the Hamiltonian
         if (state[i] > 1)
-            E₀[index] += bh.U/2 * state[i] * (state[i] - 1)
+            E₀[index] += U₀/2 * state[i] * (state[i] - 1)
         end
     end
 end
 scatter(E₀)
 range6U = (findfirst(==(6U₀), E₀), findlast(==(6U₀), E₀)) # range of states of energy 6U
 
-# space_of_state[i] stores the subspace number (𝐴, 𝑎) of i'th state, with (0, 0) assigned to all nondegenerate space 
+# space_of_state[i] stores the subspace number (𝐴, 𝑎) of i'th state,
 space_of_state = map(E₀) do E
     for A in eachindex(E_D₀)
         M = (E - E_D₀[A]) / ω
@@ -139,7 +139,7 @@ end
 
 scatter!(1:nstates, i -> space_of_state[i][2])
 plot!(legend=false)
-bh = BoseHamiltonian(J, U₀, f, ω, ncells, nbozons, space_of_state, isperiodic=true, type=:largeU, order=2);
+bh = BoseHamiltonian(lattice, J, U₀, f, ω, space_of_state, type=:largeU, order=2);
 
 e0 = bh.H[1,1]
 e3 = bh.H[c03[1], c03[1]]
@@ -159,8 +159,8 @@ f2 = heatmap(abs.(bh.H), yaxis=:flip, c=:viridis)
 f2 = heatmap(abs.(M), yaxis=:flip, c=:viridis)
 plot(bh.H[diagind(bh.H)])
 
-
-As = findall(s -> s[1] == 1, space_of_state) # As[i] gives the number of state that belongs to space A
+A = 1
+As = findall(s -> s[1] == A, space_of_state) # As store numbers of state that belongs to space `A`
 h = zeros(length(As), length(As)) # reduced matrix of the subspace of interest
 spectrum = Matrix{Float64}(undef, length(As), nU)
 scatter(bh.H[diagind(bh.H)][As], markersize=0.5, markerstrokewidth=0)
@@ -186,7 +186,7 @@ n_isol = 5
 spectrum = Matrix{Float64}(undef, n_isol, nU)
 
 @showprogress for (iU, U) in enumerate(Us)
-    bh = BoseHamiltonian(J, U, f, ω, ncells, nbozons, space_of_state, isperiodic=true, type=:largeU, order=2)
+    bh = BoseHamiltonian(lattice, J, U, f, ω, space_of_state, type=:largeU, order=2)
     # spectrum[:, iU] = eigvals(Symmetric(Matrix(bh.H)))
 
     for i in eachindex(As), j in i:length(As)
