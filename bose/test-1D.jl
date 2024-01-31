@@ -24,7 +24,8 @@ end
 
 nbozons = 5; ncells = 5
 lattice = Lattice(;dims=(1, ncells), nbozons, isperiodic=true)
-nstates = binomial(nbozons+ncells-1, nbozons)
+lattice = Lattice(;dims=(3, 3), nbozons=9, isperiodic=true)
+nstates = length(lattice.basis_states)
 J = 1 # setting to 1 so that `U` is measured in units of `J`
 U = 1#sqrt(1.01)
 f = 2
@@ -42,10 +43,10 @@ M[diagind(M)] .= 0
 heatmap(M, yaxis=:flip, c=:coolwarm)
 heatmap(bh.H, yaxis=:flip, c=:coolwarm)
 
-nU = 1000
+nU = 100
 spectrum = Matrix{Float64}(undef, nstates, nU)
-Us = range(0, 20, nU) #.* √1.01
-for (iU, U) in enumerate(Us)
+Us = range(0, 16, nU) #.* √1.01
+@showprogress for (iU, U) in enumerate(Us)
     bh = BoseHamiltonian(lattice, J, U, f, ω, type=:smallU, order=2)
     # vals, vecs, info = eigsolve(bh.H, nvals, krylovdim=nvals, :SR)
     # spectrum[:, iU] = vals[1:nvals]
@@ -60,30 +61,31 @@ scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, m
 scatter!(Us, spectrum' .- ω, xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
 hline!([-2J * besselj0(f) *  nbozons * cos(2pi/ncells * i) for i in 1:ncells])
 title!("order=$(bh.order)")
-savefig("order=2-zoom.png")
+savefig("test.png")
 yaxis!((-2, 2))
 yaxis!((-10.5, 10.5))
 
 # Exact quasienergy spectrum
-nbozons = 5; ncells = 5
+lattice = Lattice(;dims=(1, 5), nbozons=5, isperiodic=true)
+lattice = Lattice(;dims=(2, 3), nbozons=6, isperiodic=true)
 J = 1 # setting to 1 so that `U` is measured in units of `J`
 ω = 20
 U = 1
 f = 2
 bh = BoseHamiltonian(lattice, J, U, f, ω, type=:smallU)
 
-Us = range(19, 21, 200)
-ε = quasienergy(bh, Us);
+Us = range(12, 15, 300) # 5 bozons, nU = 300 => 9:12
+ε = quasienergy_dense(bh, Us)
 minimum(ε[:, 1])
 
 gr()
 fig = scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f"*", exact", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
-scatter!(Us, ε' .+ 20, xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
-scatter!(Us, ε' .- 20, xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
+scatter!(Us, ε' .+ 20, markersize=0.5, markerstrokewidth=0, c=1);
+scatter!(Us, ε' .- 20, markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
 ylims!(-10, 10)
-title!(L"F/\omega=%$(F/ω)"*", exact")
-savefig("exact-zoom2.png")
-ylims!(-2, 2)
+title!("2x3 lattice, exact")
+savefig("2x3-lattice-exact.png")
+ylims!(-0.5, 5)
 vline!([40/3], c=:white)
 
 u = 100
@@ -94,14 +96,12 @@ sp2 = copy(spectrum)
 using DelimitedFiles
 ε_old = readdlm("f2_U19-21.txt")
 
-# open("f2_U13-block.txt", "w") do io
-#     writedlm(io, ε)
+# open("U13-2x3-exact.txt", "w") do io
+#     writedlm(io, vcat(Us', ε))
 # end
 
 # degenerate theory
 
-nbozons = 7; ncells = 7
-nstates = binomial(nbozons+ncells-1, nbozons)
 J = 1 # setting to 1 so that `U` is measured in units of `J`
 f = 2
 ω = 20
@@ -113,16 +113,18 @@ U₀ = ω
 E_D₀ = [0]
 
 # construct the lattice to get basis states, and calculate the zeroth-order spectrum (for U = U₀)
-lattice = Lattice(;dims=(1, ncells), nbozons, isperiodic=true)
+lattice = Lattice(;dims=(1, ncells), nbozons=5, isperiodic=true)
+lattice = Lattice(;dims=(2, 3), nbozons=6, isperiodic=true)
+nstates = length(lattice.basis_states)
 E₀ = zeros(nstates)
 for (index, state) in enumerate(lattice.basis_states)
-    for i = 1:ncells # iterate over the terms of the Hamiltonian
-        if (state[i] > 1)
-            E₀[index] += U₀/2 * state[i] * (state[i] - 1)
+    for n_i in state
+        if (n_i > 1)
+            E₀[index] += U₀/2 * n_i * (n_i - 1)
         end
     end
 end
-scatter(E₀)
+scatter(E₀, markersize=0.5, markerstrokewidth=0)
 range6U = (findfirst(==(6U₀), E₀), findlast(==(6U₀), E₀)) # range of states of energy 6U
 
 # space_of_state[i] stores the subspace number (𝐴, 𝑎) of i'th state,
@@ -137,7 +139,7 @@ space_of_state = map(E₀) do E
     return (-1, -1) # this basically signifies a mistake in user's choice of `E_D₀`
 end
 
-scatter!(1:nstates, i -> space_of_state[i][2])
+scatter!(1:nstates, i -> space_of_state[i][2], markersize=0.5, markerstrokewidth=0)
 plot!(legend=false)
 bh = BoseHamiltonian(lattice, J, U₀, f, ω, space_of_state, type=:largeU, order=2);
 
@@ -160,8 +162,9 @@ f2 = heatmap(abs.(M), yaxis=:flip, c=:viridis)
 plot(bh.H[diagind(bh.H)])
 
 A = 1
-As = findall(s -> s[1] == A, space_of_state) # As store numbers of state that belongs to space `A`
+As = findall(s -> s[1] == A, space_of_state) # As store numbers of state that belong to space `A`
 h = zeros(length(As), length(As)) # reduced matrix of the subspace of interest
+nU = 300 # 2:54 for N=9
 spectrum = Matrix{Float64}(undef, length(As), nU)
 scatter(bh.H[diagind(bh.H)][As], markersize=0.5, markerstrokewidth=0)
 
@@ -180,7 +183,7 @@ spectrum = Matrix{Float64}(undef, ncells+1, nU)
 nU = 300 # 46 s for N=7; eigvals takes the main time
 spectrum = Matrix{Float64}(undef, nstates, nU)
 Us = range(U₀-1, U₀+1, nU)
-Us = range(12.5, 14.5, nU)
+Us = range(12.5, 15.5, nU)
 
 n_isol = 5
 spectrum = Matrix{Float64}(undef, n_isol, nU)
@@ -192,11 +195,11 @@ spectrum = Matrix{Float64}(undef, n_isol, nU)
     for i in eachindex(As), j in i:length(As)
         h[j, i] = bh.H[As[j], As[i]]
     end
-    # spectrum[:, iU] = eigvals(Symmetric(h, :L))
+    spectrum[:, iU] = eigvals(Symmetric(h, :L))
 
-    e, S = eigen(Symmetric(h, :L))
-    sp = sortperm(S[1, :], rev=true)
-    spectrum[:, iU] = e[sp[1:n_isol]]
+    # e, S = eigen(Symmetric(h, :L))
+    # sp = sortperm(S[1, :], rev=true)
+    # spectrum[:, iU] = e[sp[1:n_isol]]
 
 
     # M = Matrix(bh.H)
@@ -220,7 +223,7 @@ spectrum[spectrum .< 0] .+= ω
 fig = scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
 scatter!(Us, (spectrum .- 20)', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
 ylims!(-3, 3.5);
-ylims!(-2, 2)
+ylims!(-1, 5)
 ylims!(-10, 10)
 title!(L"N=%$ncells"*", isolated")
 plot!(xlims=(U₀-1, U₀+1), ylims=(-2, 2), title="isolated")
@@ -260,4 +263,6 @@ plot!(fig, ylims=(-2, 2), xlims=(U₀-1, U₀+1))
 plot(fig, fo2, fo1, layout=(1, 3), link=:y)
 savefig("resonance13_zoom1.png")
 
--1/ω * sum(besselj(n, f)^2/(2/3+n) for n in -20:20) * 2ncells
+# open("U13-3x3-dpt.txt", "w") do io
+#     writedlm(io, vcat(Us', spectrum))
+# end

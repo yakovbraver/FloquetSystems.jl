@@ -463,3 +463,67 @@ function update_func!(H, u, p, t)
     vals[1:end-nstates] .*= cis.(f .* sin(ω.*t) .* H_sign) # update off diagonal elements of the Hamiltonian
     H .= sparse(H_rows, H_cols, vals)
 end
+
+"Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`."
+function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real})
+    nstates = size(bh.H, 1)
+    H = zeros(ComplexF64, nstates, nstates)
+    H_sign = zeros(Int, nstates, nstates)
+    (;J, f, ω) = bh
+    (;index_of_state, ncells, neis_of_cell) = bh.lattice
+
+    # Construct the Hamiltonian with `f` = 0 and `U` = 1
+    # off-diagonal elements 𝑎†ᵢ 𝑎ⱼ
+    for (state, index) in index_of_state
+        for i = 1:ncells # iterate over the terms of the Hamiltonian
+            for (j, s) in neis_of_cell[i]
+                # 𝑎†ᵢ 𝑎ⱼ
+                if (state[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
+                    val = -im * -J * sqrt( (state[i]+1) * state[j] ) # multiply by `-im` as in the rhs of ∂ₜ𝜓 = -i𝐻𝜓
+                    bra = copy(state)
+                    bra[j] -= 1
+                    bra[i] += 1
+                    row = index_of_state[bra]
+                    H[row, index] = val
+                    H_sign[row, index] = s
+                end
+            end
+        end
+    end
+    # diagonal elements 𝑛ᵢ(𝑛ᵢ - 1)
+    U = 1
+    d = Vector{ComplexF64}(undef, nstates)
+    for (state, index) in index_of_state
+        val = 0.0
+        for n_i in state
+            if (n_i > 1)
+                val += -im * U/2 * n_i * (n_i - 1) # multiply by `-im` as in the rhs of ∂ₜ𝜓 = -i𝐻𝜓
+            end
+        end
+        d[index] = val
+    end
+
+    n_U = length(Us)
+    ε = Matrix{Float64}(undef, nstates, n_U)
+    C₀ = Matrix{ComplexF64}(I, nstates, nstates)
+    
+    T = 2π / ω
+    tspan = (0.0, T)
+    @showprogress for (i, U) in enumerate(Us)
+        H[diagind(H)] .= U .* d
+        params = (H, H_sign, f, ω)
+        prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
+        sol = solve(prob)
+        ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
+    end
+
+    return ε
+end
+
+"Update rhs operator (used for monodromy matrix calculation)."
+function schrodinger!(du, u, p, t)
+    H_base, H_sign, f, ω = p
+    H = copy(H_base)
+    H .*= cis.(f .* sin(ω.*t) .* H_sign) # update off diagonal elements of the Hamiltonian
+    du .= H * u
+end
