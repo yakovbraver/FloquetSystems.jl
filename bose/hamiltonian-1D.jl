@@ -61,18 +61,52 @@ mutable struct BoseHamiltonian
     type::Symbol
     order::Int
     space_of_state::Vector{Tuple{Int,Int}}    # space_of_state[i] stores the subspace number (𝐴, 𝑎) of i'th state, with 𝐴 = 0 assigned to all nondegenerate space
+    E₀::Vector{Int} # zeroth-order spectrum, in units of 𝑈
     H::SparseMatrixCSC{Float64, Int} # the Hamiltonian matrix
 end
 
 "Construct a `BoseHamiltonian` object defined on `lattice`."
-function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, space_of_state::Vector{Tuple{Int,Int}}=Vector{Tuple{Int,Int}}(); order::Integer=1, type::Symbol=:smallU)
-    bh = BoseHamiltonian(lattice, float(J), float(U), float(f), float(ω), type, order, space_of_state, spzeros(Float64, 1, 1))
+function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, E_D₀::Vector{Int}=Vector{Int}(); order::Integer=1, type::Symbol=:smallU)
+    E₀ = zeros(Int, length(lattice.basis_states))
+    for (index, state) in enumerate(lattice.basis_states)
+        for n_i in state
+            if (n_i > 1)
+                E₀[index] += n_i * (n_i - 1) ÷ 2 # will always be divisible by 2
+            end
+        end
+    end
+    space_of_state::Vector{Tuple{Int,Int}} = if length(E_D₀) == 0
+        Vector{Tuple{Int,Int}}()
+    else
+        map(E₀) do E
+            for A in eachindex(E_D₀) 
+                # check if `E - E_D₀[A]` is divisible by ω
+                M = (E - E_D₀[A]) * U / ω
+                M_int = round(Int, M)
+                if isapprox(M, M_int, atol=0.01)
+                    return (A, M_int)
+                end
+            end
+            return (-1, -1) # this basically signifies a mistake in user's choice of `E_D₀`
+        end
+    end
+    bh = BoseHamiltonian(lattice, float(J), float(U), float(f), float(ω), type, order, space_of_state, E₀, spzeros(Float64, 1, 1))
     if type == :smallU
         constructH_smallU!(bh, order)
     elseif type == :largeU
         constructH_largeU!(bh, order)
     end
-    bh
+    return bh
+end
+
+"Update parameters of `bh` and reconstruct `bh.H`."
+function update_params!(bh::BoseHamiltonian; J::Real=bh.J, U::Real=bh.U, f::Real=bh.f, ω::Real=bh.ω, order::Integer=bh.order, type::Symbol=bh.type)
+    bh.J = J; bh.U = U; bh.f = f; bh.ω = ω; bh.order = order; bh.type = type
+    if type == :smallU
+        constructH_smallU!(bh, order)
+    elseif type == :largeU
+        constructH_largeU!(bh, order)
+    end
 end
 
 "Construct the Hamiltonian matrix."
