@@ -324,13 +324,19 @@ end
 function constructH_largeU!(bh::BoseHamiltonian, order::Integer)
     H_rows, H_cols, H_vals = Int[], Int[], Float64[]
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
-    (;J, U, f, ω, space_of_state) = bh
+    (;J, U, f, ω, E₀, space_of_state) = bh
 
     R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
+    R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
+    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Int}, Float64}()
+    ε = Vector{Float64}(undef, length(E₀)) # energies (including 𝑈 multiplier) reduced to first Floquet zone
+    for i in eachindex(E₀)
+        ε[i] = E₀[i]*U - space_of_state[i][2]*ω
+    end
     # take each basis state and find which transitions are possible
-    for (ket, ket_index) in index_of_state
-        A, a = space_of_state[ket_index]
-        val_d = 0.0 # diagonal value
+    for (ket, α) in index_of_state
+        A, a = space_of_state[α]
+        val_d = 0.0 # diagonal value TODO: use E₀ instead
         for i = 1:ncells # iterate over the terms of the Hamiltonian
 
             # 0th order
@@ -347,8 +353,8 @@ function constructH_largeU!(bh::BoseHamiltonian, order::Integer)
                     A′, a′ = space_of_state[index_of_state[bra]]
                     if A′ == A # proceed only if bra is in the same degenerate space
                         val = -J * besselj(a - a′, f*i_j) * sqrt( (ket[i]+1) * ket[j] )
-                        row = index_of_state[bra]
-                        push_state!(H_rows, H_cols, H_vals, val; row, col=ket_index)
+                        α′ = index_of_state[bra]
+                        push_state!(H_rows, H_cols, H_vals, val; row=α′, col=α)
                     end
                 end
             end
@@ -368,21 +374,92 @@ function constructH_largeU!(bh::BoseHamiltonian, order::Integer)
                             val *= √bra[j]
                             bra[j] -= 1
                             bra[i] += 1
-                            bra_index = index_of_state[bra]
-                            A′, a′ = space_of_state[bra_index]
+                            α′ = index_of_state[bra]
+                            A′, a′ = space_of_state[α′]
                             if A′ == A # proceed only if bra is in the same degenerate space
                                 val *= √bra[i]
                                 skipzero = (B == A)
                                 val *= (get_R!(R, U, ω, f, bra[i]-bra[j]-1, a′-b, i_j, k_l, a′, a, b, skipzero) +
                                         get_R!(R, U, ω, f, ket[l]-ket[k]-1, a-b, i_j, k_l, a′, a, b, skipzero))
-                                push_state!(H_rows, H_cols, H_vals, val; row=bra_index, col=ket_index)
+                                push_state!(H_rows, H_cols, H_vals, val; row=α′, col=α)
                             end
                         end
                     end
                 end
             end
+
+            if order >= 3
+                for (j, i_j) in neis_of_cell[i]
+                    for k = 1:ncells, (l, k_l) in neis_of_cell[k], m = 1:ncells, (n, m_n) in neis_of_cell[m]
+                        # 𝑎†ᵢ 𝑎ⱼ 𝑎†ₖ 𝑎ₗ 𝑎†ₘ 𝑎ₙ
+                        bra = copy(ket)
+                        val = -J^3/2
+                        bra[n] == 0 && continue
+                        val *= √bra[n]; bra[n] -= 1; bra[m] += 1; val *= √bra[m]
+                        bra[l] == 0 && continue
+                        β = index_of_state[bra]
+                        B, b = space_of_state[β]
+                        val *= √bra[l]; bra[l] -= 1; bra[k] += 1; val *= √bra[k]
+                        bra[j] == 0 && continue
+                        γ = index_of_state[bra]
+                        C, c = space_of_state[γ]
+                        val *= √bra[j]; bra[j] -= 1; bra[i] += 1; val *= √bra[i]
+                        α′ = index_of_state[bra]
+                        A′, a′ = space_of_state[α′]
+                        if A′ == A
+                            s = 0.0 # terms of the sum
+                            if A == B
+                                J_indices = (-a′+b, -b+c, -c+a)
+                                J_args = (i_j, k_l, m_n)
+                                ΔE1 = E₀[γ] - E₀[α′]
+                                ΔE2 = E₀[β] - E₀[γ]
+                                s += get_R2!(R2, U, ω, f, ΔE1, ΔE2, c-a′, b-c, J_indices, J_args, B == C)
+                            end
+                            if A == C
+                                J_indices = (a-c, b-a′, c-b)
+                                J_args = (m_n, i_j, k_l)
+                                ΔE1 = E₀[β] - E₀[α]
+                                ΔE2 = E₀[γ] - E₀[β]
+                                s += get_R2!(R2, U, ω, f, ΔE1, ΔE2, b-a, c-b, J_indices, J_args, B == C)
+                            end
+                            if B == C
+                                J_indices = (c-b, b-a′, a-c)
+                                J_args = (k_l, i_j, m_n)
+                                ΔE1 = E₀[β] - E₀[α′]
+                                ΔE2 = E₀[α′] - E₀[γ]
+                                s -= get_R2!(R2, U, ω, f, ΔE1, ΔE2, b-a′, a′-c, J_indices, J_args, B == C)
+
+                                ΔE1 = E₀[β] - E₀[α]
+                                ΔE2 = E₀[α] - E₀[γ]
+                                s -= get_R2!(R2, U, ω, f, ΔE1, ΔE2, b-a, a-c, J_indices, J_args, B == C)
+                            end
+
+                            skip = (A == B && A == C) ? 1 : (A == B && B != C) ? 2 : (A != B && B == C) ? 3 : 4
+                            key = (a, a′, b, c, A, A′, B, C, i_j, k_l, m_n, skip)
+                            if !haskey(R3, key)
+                                N = 20
+                                t = 0.0
+                                prange = A == B ? [-N:-1; 1:N] : collect(-N:N)
+                                qrange = A == C ? [-N:-1; 1:N] : collect(-N:N)
+                                for p in prange, q in qrange
+                                    B == C && q == p && continue
+                                    t += besselj(b-a′-p, f*i_j) * besselj(c-b+p-q, f*k_l) * besselj(a-c+q, f*m_n) * (
+                                         1 / 2(ε[α′] - ε[γ] - q*ω)     * (1/(ε[γ] - ε[β]  - (p-q)*ω) - 1/(ε[β] - ε[α′] + p*ω)) +
+                                         1 / 2(ε[α]  - ε[β] - p*ω)     * (1/(ε[α] - ε[γ]  - q*ω)     - 1/(ε[γ] - ε[β]  - (p-q)*ω)) +
+                                         1 / 6(ε[γ]  - ε[β] - (p-q)*ω) * (1/(ε[β] - ε[α′] + p*ω)     + 1/(ε[α] - ε[γ]  - q*ω)) -
+                                         1 / 3(ε[α]  - ε[γ] - q*ω) / (ε[β] - ε[α′] + p*ω) )
+                                end
+                                R3[key] = t
+                            end
+                            s += R3[key]
+                            val *= s
+                            push_state!(H_rows, H_cols, H_vals, val; row=α′, col=α)
+                        end
+                    end
+                end
+            end
         end
-        push_state!(H_rows, H_cols, H_vals, val_d - a*ω; row=ket_index, col=ket_index)
+        push_state!(H_rows, H_cols, H_vals, val_d - a*ω; row=α, col=α)
     end
     bh.H = sparse(H_rows, H_cols, H_vals)
 end
@@ -393,6 +470,7 @@ function push_state!(H_rows, H_cols, H_vals, val; row, col)
     push!(H_rows, row)
 end
 
+"Return key from the `R` dictionary; required for 2nd order DPT."
 function get_R!(R, U, ω, f, nα, d, i_j, k_l, a′, a, b, skipzero)
     key = (nα, d, i_j, k_l, a′, a, b, skipzero)
     if !haskey(R, key)
@@ -401,6 +479,23 @@ function get_R!(R, U, ω, f, nα, d, i_j, k_l, a′, a, b, skipzero)
         nrange = skipzero ? [-N:-1; 1:N] : collect(-N:N)
         for n in nrange
             s += 1/(U*nα - (d+n)*ω) * besselj(-(a′-b+n), f*i_j) * besselj(a-b+n, f*k_l)
+        end
+        R[key] = s
+    end
+    return R[key]
+end
+
+"Return key from the `R` dictionary; required for 3rd order DPT."
+function get_R2!(R, U, ω, f, ΔE1, ΔE2, d1, d2, J_indices, J_args, skipzero)
+    i1, i2, i3 = J_indices
+    x1, x2, x3 = J_args
+    key = (ΔE1, ΔE2, d1, d2, i1, i2, i3, x1, x2, x3, skipzero)
+    if !haskey(R, key)
+        N = 20
+        s = 0.0
+        prange = skipzero ? [-N:-1; 1:N] : collect(-N:N)
+        for p in prange
+            s += 1 / (U*ΔE1 - (d1-p)*ω) / (U*ΔE2 - (d2+p)*ω) * besselj(i1, f*x1) * besselj(i2-p, f*x2) * besselj(i3+p, f*x3)
         end
         R[key] = s
     end
