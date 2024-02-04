@@ -66,7 +66,7 @@ mutable struct BoseHamiltonian
 end
 
 "Construct a `BoseHamiltonian` object defined on `lattice`."
-function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, E_D₀::Vector{Int}=Vector{Int}(); order::Integer=1, type::Symbol=:smallU)
+function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, r::Rational=0; order::Integer=1, type::Symbol=:smallU)
     E₀ = zeros(Int, length(lattice.basis_states))
     for (index, state) in enumerate(lattice.basis_states)
         for n_i in state
@@ -75,19 +75,13 @@ function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, 
             end
         end
     end
-    space_of_state::Vector{Tuple{Int,Int}} = if length(E_D₀) == 0
+    space_of_state::Vector{Tuple{Int,Int}} = if r == 0
         Vector{Tuple{Int,Int}}()
     else
         map(E₀) do E
-            for A in eachindex(E_D₀) 
-                # check if `E - E_D₀[A]` is divisible by ω
-                M = (E - E_D₀[A]) * U / ω
-                M_int = round(Int, M)
-                if isapprox(M, M_int, atol=0.01)
-                    return (A, M_int)
-                end
-            end
-            return (-1, -1) # this basically signifies a mistake in user's choice of `E_D₀`
+            a = floor(Int, E * r)
+            A = E % denominator(r)
+            return (A, a)
         end
     end
     bh = BoseHamiltonian(lattice, float(J), float(U), float(f), float(ω), type, order, space_of_state, E₀, spzeros(Float64, 1, 1))
@@ -328,7 +322,7 @@ function constructH_largeU!(bh::BoseHamiltonian, order::Integer)
 
     R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
     R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
-    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Int}, Float64}()
+    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int}, Float64}()
     ε = Vector{Float64}(undef, length(E₀)) # energies (including 𝑈 multiplier) reduced to first Floquet zone
     for i in eachindex(E₀)
         ε[i] = E₀[i]*U - space_of_state[i][2]*ω
@@ -336,24 +330,17 @@ function constructH_largeU!(bh::BoseHamiltonian, order::Integer)
     # take each basis state and find which transitions are possible
     for (ket, α) in index_of_state
         A, a = space_of_state[α]
-        val_d = 0.0 # diagonal value TODO: use E₀ instead
         for i = 1:ncells # iterate over the terms of the Hamiltonian
-
-            # 0th order
-            if (ket[i] > 1)
-                val_d += U/2 * ket[i] * (ket[i] - 1)
-            end
-
             # 1st order
             for (j, i_j) in neis_of_cell[i]
                 if (ket[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
                     bra = copy(ket)
                     bra[j] -= 1
                     bra[i] += 1
-                    A′, a′ = space_of_state[index_of_state[bra]]
+                    α′ = index_of_state[bra]
+                    A′, a′ = space_of_state[α′]
                     if A′ == A # proceed only if bra is in the same degenerate space
                         val = -J * besselj(a - a′, f*i_j) * sqrt( (ket[i]+1) * ket[j] )
-                        α′ = index_of_state[bra]
                         push_state!(H_rows, H_cols, H_vals, val; row=α′, col=α)
                     end
                 end
@@ -392,17 +379,17 @@ function constructH_largeU!(bh::BoseHamiltonian, order::Integer)
                 for (j, i_j) in neis_of_cell[i]
                     for k = 1:ncells, (l, k_l) in neis_of_cell[k], m = 1:ncells, (n, m_n) in neis_of_cell[m]
                         # 𝑎†ᵢ 𝑎ⱼ 𝑎†ₖ 𝑎ₗ 𝑎†ₘ 𝑎ₙ
+                        ket[n] == 0 && continue
                         bra = copy(ket)
                         val = -J^3/2
-                        bra[n] == 0 && continue
                         val *= √bra[n]; bra[n] -= 1; bra[m] += 1; val *= √bra[m]
                         bra[l] == 0 && continue
-                        β = index_of_state[bra]
-                        B, b = space_of_state[β]
-                        val *= √bra[l]; bra[l] -= 1; bra[k] += 1; val *= √bra[k]
-                        bra[j] == 0 && continue
                         γ = index_of_state[bra]
                         C, c = space_of_state[γ]
+                        val *= √bra[l]; bra[l] -= 1; bra[k] += 1; val *= √bra[k]
+                        bra[j] == 0 && continue
+                        β = index_of_state[bra]
+                        B, b = space_of_state[β]
                         val *= √bra[j]; bra[j] -= 1; bra[i] += 1; val *= √bra[i]
                         α′ = index_of_state[bra]
                         A′, a′ = space_of_state[α′]
@@ -434,8 +421,9 @@ function constructH_largeU!(bh::BoseHamiltonian, order::Integer)
                                 s -= get_R2!(R2, U, ω, f, ΔE1, ΔE2, b-a, a-c, J_indices, J_args, B == C)
                             end
 
-                            skip = (A == B && A == C) ? 1 : (A == B && B != C) ? 2 : (A != B && B == C) ? 3 : 4
-                            key = (a, a′, b, c, A, A′, B, C, i_j, k_l, m_n, skip)
+                            # skip = (A == B && A == C) ? 1 : (A == B && B != C) ? 2 : (A == C && B != C) ? 3 : (A != B && B == C) ? 4 : 5
+                            # key = (a, a′, b, c, A, A′, B, C, i_j, k_l, m_n, skip)
+                            key = (a, a′, b, c, A, B, C, i_j, k_l, m_n)
                             if !haskey(R3, key)
                                 N = 20
                                 t = 0.0
@@ -459,7 +447,7 @@ function constructH_largeU!(bh::BoseHamiltonian, order::Integer)
                 end
             end
         end
-        push_state!(H_rows, H_cols, H_vals, val_d - a*ω; row=α, col=α)
+        push_state!(H_rows, H_cols, H_vals, ε[α]; row=α, col=α)
     end
     bh.H = sparse(H_rows, H_cols, H_vals)
 end

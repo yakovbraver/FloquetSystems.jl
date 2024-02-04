@@ -1,6 +1,6 @@
 includet("hamiltonian-1D.jl")
 
-using SparseArrays, LinearAlgebra
+using SparseArrays, LinearAlgebra, FLoops
 using Plots, LaTeXStrings
 using BenchmarkTools, SpecialFunctions
 using ProgressMeter
@@ -76,7 +76,7 @@ f = 5
 bh = BoseHamiltonian(lattice, J, U, f, ω, type=:smallU)
 
 Us = range(0, ω, 300) # 6 bozons, nU = 300 => 9:12
-Us = range(6, 8.5, 500) # 6 bozons, nU = 300 => 9:12
+Us = range(1.57, 1.7, 300) # 6 bozons, nU = 300 => 9:12
 ε = quasienergy_dense(bh, Us)
 minimum(ε[:, 1])
 
@@ -87,13 +87,13 @@ scatter!(Us, ε' .- ω, markersize=0.5, markerstrokewidth=0, c=1, legend=false, 
 ylims!(-ω/2, ω/2)
 title!("2x3 lattice, exact")
 savefig("2x3-lattice-exact.png")
-ylims!(-1, 1)
-xlims!(6, 8.5)
+ylims!(-0.6, -0.3)
+xlims!(0, 3)
 for k in [1, 2, 3, 4, 6, 7, 10, 15]
     plot!(fig, [0, 10], [0, 10k], c=:white)
 end
 fig
-vline!([40/3], c=:white)
+vline!([10/6], c=:white)
 
 u = 100
 fig1 = scatter(sort(ε[:, u]), xlabel=L"U/J", ylabel=L"\varepsilon/J", title="exact", markersize=1, markerstrokewidth=0, c=1, legend=false, ticks=:native)
@@ -101,154 +101,147 @@ scatter!(spectrum[:, u], xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=1, m
 sp2 = copy(spectrum)
 
 using DelimitedFiles
-ε_old = readdlm("f2_U19-21.txt")
+ε_old = readdlm("f5_w10_U1.57-1.7_2x3-exact.txt")
+fig = scatter(ε_old[1, :], ε_old[2:end, :]', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", exact", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
+scatter!(ε_old[1, :], ε_old[2:end, :]' .+ ω, markersize=0.5, markerstrokewidth=0, c=1);
+scatter!(ε_old[1, :], ε_old[2:end, :]' .- ω, markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
+ylims!(-0.6, -0.4)
+xlims!(1.55, 1.7);
+ylims!(-ω/2, ω/2)
+title!(fig, L"F/\omega=%$f, \omega=%$ω"*", 2x3 lattice, exact")
+vline!([10], c=:white)
+savefig("f$(f)_w$(ω)_U0-3_2x3-exact.png")
 
-open("f$(f)_w$(ω)-2x3-exact.txt", "w") do io
-    writedlm(io, vcat(Us', ε))
-end
+# open("f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_2x3-exact.txt", "w") do io
+#     writedlm(io, vcat(Us', ε))
+# end
 
 # degenerate theory
 
 J = 1 # setting to 1 so that `U` is measured in units of `J`
-f = 2
-ω = 20
+f = 5
+ω = 10.0
 
-U₀ = ω * 2/3
-E_D₀ = [0, 1, 2]
+r = 2//3
+r = 1//6
+r = 1//1
 
-U₀ = ω
-E_D₀ = [0]
+U₀ = ω * r
+
+ε = Vector{Float64}(undef, length(bh.E₀)) # energies (including 𝑈 multiplier) reduced to first Floquet zone
+for i in eachindex(bh.E₀)
+    ε[i] = bh.E₀[i]*1.05U₀ - bh.space_of_state[i][2]*ω
+end
+scatter(ε ./ U₀, markersize=1, markerstrokewidth=0, legend=false)
+scatter!(1:length(bh.E₀), i -> bh.space_of_state[i][1], markersize=1, markerstrokewidth=0, legend=false)
 
 # construct the lattice to get basis states, and calculate the zeroth-order spectrum (for U = U₀)
-lattice = Lattice(;dims=(1, ncells), nbozons=5, isperiodic=true)
+lattice = Lattice(;dims=(1, 5), nbozons=5, isperiodic=true)
 lattice = Lattice(;dims=(2, 3), nbozons=6, isperiodic=true)
-bh = BoseHamiltonian(lattice, J, U₀, f, ω, E_D₀, type=:largeU, order=2);
+@time bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, type=:largeU, order=3);
+scatter(abs.(bh.H[1,:]), markersize=1, markerstrokewidth=0)
 
 scatter(bh.E₀, markersize=0.5, markerstrokewidth=0)
-scatter!(1:nstates, i -> bh.space_of_state[i][2], markersize=0.5, markerstrokewidth=0, legend=false)
 range6U = (findfirst(==(6), bh.E₀), findlast(==(6), bh.E₀)) # range of states of energy 6U
+range6U = (findfirst(==(4), bh.E₀), findlast(==(4), bh.E₀)) # range of states of energy 6U
 
-e0 = bh.H[1,1]
-e3 = bh.H[c03[1], c03[1]]
-c = bh.H[1, c03[1]]
-sqrt((e0-e3)^2+4ncells*c^2)
+issymmetric(bh.H)
+M = copy(bh.H);
+M[diagind(M)] .= 0
+sum(abs.(M - M'))
 
 M = copy(bh.H);
-N = copy(bh.H);
 M[diagind(M)] .= 0;
-N[diagind(M)] .= 0;
-M[52:81, 102:121] .= 0
-M[102:121, 52:81] .= 0
-d = M[diagind(M)]
-M[52:81, 52:81] .= 0
-M[diagind(M)] .= d
-f2 = heatmap(abs.(bh.H), yaxis=:flip, c=:viridis)
 f2 = heatmap(abs.(M), yaxis=:flip, c=:viridis)
+plotlyjs()
 plot(bh.H[diagind(bh.H)])
 
-A = 1
+A = 0
 As = findall(s -> s[1] == A, bh.space_of_state) # As store numbers of state that belong to space `A`
 h = zeros(length(As), length(As)) # reduced matrix of the subspace of interest
 nU = 300 # 2:54 for N=9
-Us = range(6.01, 8.5, nU)
+Us = range(1.55, 1.7, nU)
 spectrum = Matrix{Float64}(undef, length(As), nU)
-scatter(bh.H[diagind(bh.H)][As], markersize=0.5, markerstrokewidth=0)
+# scatter(bh.H[diagind(bh.H)][As], markersize=0.5, markerstrokewidth=0)
 
-c03 = findall(abs.(bh.H[1, :]) .> 0)[2:end] # numbers of states which ground state is coupled to
-c36 = findall(abs.(bh.H[c03[1], range6U[1]:range6U[2]]) .> 0) .+ range6U[1] .- 1 # numbers of states from 6U manifold which states 3U is coupled to
-bh.H[c36[1], c36[1]]
-bh.H[c03[1], c36[1]]
-bh.basis_states[c03]
-R = zeros(1+length(c03)+length(c36), 1+length(c03)+length(c36)) # isolated matrix
-R[1, 1] = bh.H[1, 1]
-R[1, range(2, length=length(c03))] .= bh.H[1, c03]
-R[diagind(R)[range(2, length=length(c03))]] .= bh.H[c03[1], c03[1]]
-R[1, length(c03)+1:end] .= bh.H[1, c03]
-spectrum = Matrix{Float64}(undef, ncells+1, nU)
-
-nU = 300 # 46 s for N=7; eigvals takes the main time
-spectrum = Matrix{Float64}(undef, nstates, nU)
+nU = 300
+spectrum = Matrix{Float64}(undef, size(bh.H, 1), nU)
 Us = range(U₀-1, U₀+1, nU)
-Us = range(12.5, 15.5, nU)
+Us = range(6.01, 7.99, nU)
 
-n_isol = 5
-spectrum = Matrix{Float64}(undef, n_isol, nU)
+function scan_U!(spectrum, lattice, Us, As; order)
+    progbar = Progress(length(Us))
+    update!(progbar, 0)
+    loc = Threads.SpinLock()
+    progcount = Threads.Atomic{Int}(0)
 
-@showprogress for (iU, U) in enumerate(Us)
-    update_params!(bh; U)
-    # spectrum[:, iU] = eigvals(Symmetric(Matrix(bh.H)))
+    Threads.@threads for iU in eachindex(Us)
+        bh = BoseHamiltonian(lattice, J, Us[iU], f, ω, r; type=:largeU, order);
+        # spectrum[:, iU] = eigvals(Symmetric(Matrix(bh.H)))
+    
+        h = zeros(length(As), length(As)) # reduced matrix of the subspace of interest
+        for i in eachindex(As), j in i:length(As)
+            h[j, i] = bh.H[As[j], As[i]]
+        end
+        spectrum[:, iU] = eigvals(Symmetric(h, :L))
 
-    for i in eachindex(As), j in i:length(As)
-        h[j, i] = bh.H[As[j], As[i]]
+        Threads.atomic_add!(progcount, 1)
+        Threads.lock(loc)
+        update!(progbar, progcount[])
+        Threads.unlock(loc) 
     end
-    spectrum[:, iU] = eigvals(Symmetric(h, :L))
-
-    # e, S = eigen(Symmetric(h, :L))
-    # sp = sortperm(S[1, :], rev=true)
-    # spectrum[:, iU] = e[sp[1:n_isol]]
-
-
-    # M = Matrix(bh.H)
-    # M[52:81, 102:121] .= 0
-    # M[102:121, 52:81] .= 0
-    # d = M[diagind(M)]
-    # M[52:81, 52:81] .= 0
-    # M[diagind(M)] .= d
-    # spectrum[:, iU] = eigvals(Symmetric(M))
-
-    # R[1, 1] = bh.H[1, 1]
-    # R[1, 2:end] .= bh.H[1, c03[1]]
-    # R[diagind(R)[2:end]] .= bh.H[c03[1], c03[1]]
-    # spectrum[:, iU] = eigvals(Symmetric(R))
 end
+
+BLAS.set_num_threads(1)
+nU = 300
+Us = range(1.57, 1.7, nU)
+spectrum = Matrix{Float64}(undef, length(As), nU)
+scan_U!(spectrum, lattice, Us, As; order=3)
+
+# spectrum40 = copy(spectrum)
 
 gr()
 plotlyjs()
 spectrum .%= ω
 spectrum[spectrum .< 0] .+= ω
-figD = scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
-scatter!(Us, (spectrum .- ω)', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
+figD2 = scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false)
+scatter!(Us, (spectrum .- ω)', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false)
 ylims!(-3, 3.5);
-ylims!(-1, 1)
-ylims!(-ω/2, ω/2)
-title!(L"N=%$ncells"*", isolated")
+ylims!(-2, 2)
+ylims!(figD2, (-1.2, 1))
+ylims!(fig, (-1.2, 1))
+ylims!(figD2, (-ω/2, ω/2))
+xlims!(6, 8)
+plot(fig, figD2)
+title!("order = 3")
 plot!(xlims=(U₀-1, U₀+1), ylims=(-2, 2), title="isolated")
-# plot!(xlims=(U₀-1, U₀+1), ylims=(-2, 2), title=L"\langle 3|W|6\rangle = \langle 3|W|3\rangle = 0")
-xlims!(19, 21)
 vline!([U₀], c=:white)
-plot!(fo2, ylabel="")
 
 plot(full, no6, no36, isol)
-savefig("N=$ncells-isolated.png")
-
-sp = Matrix{Float64}(undef, 2(ncells+1), nU)
-sp[1:9, :] .= spectrum
-sp[10:18, :] .= spectrum .- 20
-diffs = zeros(nU)
-for (i, col) in enumerate(eachcol(sp))
-    ext = extrema(col)
-    diffs[i] = ext[2] - ext[1]
-end
-plot(Us, diffs)
-fig = scatter(Us, sp', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false)
-for i in eachindex(sp)
-    if sp[i] < -5 || sp[i] > 10
-        sp[i] = 1
-    end
-end
+savefig("f$(f)_w$(ω)_2x3-dpt1.png")
 
 using DelimitedFiles
 Us = range(12, 15, 1000)
 ε = readdlm("f2_U12-15.txt")
 # Us = range(0, 45, 1000)
-# ε = readdlm("f2_U45.txt")
+spectrum_file = readdlm("f5_w10_U1.57-1.7_2x3-dpt3.txt")
+figF = scatter(spectrum_file[1, :], spectrum_file[2:end, :]', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native)
+scatter!(spectrum_file[1, :], spectrum_file[2:end, :]' .+ ω, markersize=0.5, markerstrokewidth=0, c=1);
+scatter!(spectrum_file[1, :], spectrum_file[2:end, :]' .- ω, markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
+plot(figD2, figF, link=:y)
+ylims!(-0.6, -0.4)
+
 
 fig = scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, title="exact", widen=false)
 plot!(fig, ylims=(-2, 2), xlims=(U₀-1, U₀+1))
 
-plot(fig, fo2, fo1, layout=(1, 3), link=:y)
-savefig("resonance13_zoom1.png")
+theme(:dark, size=(1200, 600))
+plot(rand(3), rand(3))
+ylims!(fig, (-ω/2, ω/2))
+xlims!(figD3, (6, 8))
+plot(fig, figD3, figD2, layout=(1, 3), link=:y)
+savefig("1x5-3rd-order.png")
 
-# open("U13-3x3-dpt.txt", "w") do io
-#     writedlm(io, vcat(Us', spectrum))
-# end
+open("f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_2x3-dpt3.txt", "w") do io
+    writedlm(io, vcat(Us', spectrum))
+end
