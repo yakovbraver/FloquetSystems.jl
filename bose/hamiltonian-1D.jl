@@ -1,6 +1,7 @@
 using DifferentialEquations, SparseArrays, Combinatorics, SpecialFunctions
-using LinearAlgebra: diagind, eigvals, I
+using LinearAlgebra: diagind, eigvals, I, BLAS
 using ProgressMeter: @showprogress
+import ProgressMeter
 
 import Base.show
 
@@ -66,7 +67,7 @@ mutable struct BoseHamiltonian
 end
 
 "Construct a `BoseHamiltonian` object defined on `lattice`."
-function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, r::Rational=0; order::Integer=1, type::Symbol=:smallU)
+function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, r::Rational=0//1; order::Integer=1, type::Symbol=:smallU)
     E₀ = zeros(Int, length(lattice.basis_states))
     for (index, state) in enumerate(lattice.basis_states)
         for n_i in state
@@ -581,22 +582,22 @@ function update_func!(H, u, p, t)
     H .= sparse(H_rows, H_cols, vals)
 end
 
-"Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`."
-function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real})
+"Calculate quasienergy spectrum via monodromy matrix for each value of 𝑈 in `Us`. `bh.U` may be arbitrary."
+function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; parallelise=true)
     nstates = size(bh.H, 1)
     H = zeros(ComplexF64, nstates, nstates)
     H_sign = zeros(Int, nstates, nstates)
-    (;J, f, ω) = bh
+    (;J, f, ω, E₀) = bh
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
 
-    # Construct the Hamiltonian with `f` = 0 and `U` = 1
+    # Construct the Hamiltonian with `f` = 0
     # off-diagonal elements 𝑎†ᵢ 𝑎ⱼ
     for (state, index) in index_of_state
         for i = 1:ncells # iterate over the terms of the Hamiltonian
             for (j, s) in neis_of_cell[i]
                 # 𝑎†ᵢ 𝑎ⱼ
                 if (state[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
-                    val = -im * -J * sqrt( (state[i]+1) * state[j] ) # multiply by `-im` as in the rhs of ∂ₜ𝜓 = -i𝐻𝜓
+                    val = -im * -J * sqrt( (state[i]+1) * state[j] ) # multiply by `-im` as on the rhs of ∂ₜ𝜓 = -i𝐻𝜓
                     bra = copy(state)
                     bra[j] -= 1
                     bra[i] += 1
@@ -607,18 +608,6 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real})
             end
         end
     end
-    # diagonal elements 𝑛ᵢ(𝑛ᵢ - 1)
-    U = 1
-    d = Vector{ComplexF64}(undef, nstates)
-    for (state, index) in index_of_state
-        val = 0.0
-        for n_i in state
-            if (n_i > 1)
-                val += -im * U/2 * n_i * (n_i - 1) # multiply by `-im` as in the rhs of ∂ₜ𝜓 = -i𝐻𝜓
-            end
-        end
-        d[index] = val
-    end
 
     n_U = length(Us)
     ε = Matrix{Float64}(undef, nstates, n_U)
@@ -626,12 +615,38 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real})
     
     T = 2π / ω
     tspan = (0.0, T)
-    @showprogress for (i, U) in enumerate(Us)
-        H[diagind(H)] .= U .* d
-        params = (H, H_sign, f, ω)
-        prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
-        sol = solve(prob)
-        ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
+
+    if parallelise
+        n_blas = BLAS.get_num_threads() # save original number of threads to restore later
+        BLAS.set_num_threads(1)
+
+        progbar = ProgressMeter.Progress(length(Us))
+        ProgressMeter.update!(progbar, 0)
+        loc = Threads.SpinLock()
+        progcount = Threads.Atomic{Int}(0)
+
+        Threads.@threads for i in eachindex(Us)
+            H_base = copy(H)
+            H_base[diagind(H_base)] .= Us[i] .* (-im .* E₀)
+            params = (H_base, H_sign, f, ω)
+            prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
+            sol = solve(prob)
+            ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
+
+            Threads.atomic_add!(progcount, 1)
+            Threads.lock(loc)
+            ProgressMeter.update!(progbar, progcount[])
+            Threads.unlock(loc) 
+        end
+        BLAS.set_num_threads(n_blas) # restore original number of threads
+    else
+        @showprogress for (i, U) in enumerate(Us)
+            H[diagind(H)] .= U .* (-im .* E₀)
+            params = (H, H_sign, f, ω)
+            prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
+            sol = solve(prob)
+            ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
+        end
     end
 
     return ε

@@ -77,7 +77,7 @@ bh = BoseHamiltonian(lattice, J, U, f, ω, type=:smallU)
 
 Us = range(0, ω, 300) # 6 bozons, nU = 300 => 9:12
 Us = range(1.57, 1.7, 300) # 6 bozons, nU = 300 => 9:12
-ε = quasienergy_dense(bh, Us)
+ε = quasienergy_dense(bh, Us, parallelise=true)
 minimum(ε[:, 1])
 
 gr()
