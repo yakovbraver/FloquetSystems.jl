@@ -323,6 +323,130 @@ function constructH_largeU!(bh::BoseHamiltonian, order::Integer)
 
     R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
     R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
+    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Int}, Float64}()
+    ε = Vector{Float64}(undef, length(E₀)) # energies (including 𝑈 multiplier) reduced to first Floquet zone
+    for i in eachindex(E₀)
+        ε[i] = E₀[i]*U - space_of_state[i][2]*ω
+    end
+    # take each basis state and find which transitions are possible
+    for (ket, α) in index_of_state
+        A, a = space_of_state[α]
+        for i = 1:ncells # iterate over the terms of the Hamiltonian
+            # 1st order
+            for (j, i_j) in neis_of_cell[i]
+                if (ket[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
+                    bra = copy(ket)
+                    bra[j] -= 1
+                    bra[i] += 1
+                    α′ = index_of_state[bra]
+                    A′, a′ = space_of_state[α′]
+                    val = -J * besselj(a - a′, f*i_j) * sqrt( (ket[i]+1) * ket[j] )
+                    push_state!(H_rows, H_cols, H_vals, val; row=α′, col=α)
+                end
+            end
+
+            if order >= 2
+                for (j, i_j) in neis_of_cell[i]
+                    for k = 1:ncells, (l, k_l) in neis_of_cell[k]
+                        # 𝑎†ᵢ 𝑎ⱼ 𝑎†ₖ 𝑎ₗ
+                        if ( ket[l] > 0 && (j == k || (j == l && ket[j] > 1) || (j != l && ket[j] > 0)) )
+                            val = +J^2/2
+                            bra = copy(ket)
+                            val *= √bra[l]
+                            bra[l] -= 1
+                            bra[k] += 1
+                            val *= √bra[k]
+                            B, b = space_of_state[index_of_state[bra]]
+                            val *= √bra[j]
+                            bra[j] -= 1
+                            bra[i] += 1
+                            α′ = index_of_state[bra]
+                            A′, a′ = space_of_state[α′]
+                            val *= √bra[i]
+                            val *= (get_R!(R, U, ω, f, bra[i]-bra[j]-1, a′-b, i_j, k_l, a′, a, b, true) +
+                                    get_R!(R, U, ω, f, ket[l]-ket[k]-1, a-b, i_j, k_l, a′, a, b, true))
+                            push_state!(H_rows, H_cols, H_vals, val; row=α′, col=α)
+                        end
+                    end
+                end
+            end
+
+            if order >= 3
+                for (j, i_j) in neis_of_cell[i]
+                    for k = 1:ncells, (l, k_l) in neis_of_cell[k], m = 1:ncells, (n, m_n) in neis_of_cell[m]
+                        # 𝑎†ᵢ 𝑎ⱼ 𝑎†ₖ 𝑎ₗ 𝑎†ₘ 𝑎ₙ
+                        ket[n] == 0 && continue
+                        bra = copy(ket)
+                        val = -J^3/2
+                        val *= √bra[n]; bra[n] -= 1; bra[m] += 1; val *= √bra[m]
+                        bra[l] == 0 && continue
+                        γ = index_of_state[bra]
+                        C, c = space_of_state[γ]
+                        val *= √bra[l]; bra[l] -= 1; bra[k] += 1; val *= √bra[k]
+                        bra[j] == 0 && continue
+                        β = index_of_state[bra]
+                        B, b = space_of_state[β]
+                        val *= √bra[j]; bra[j] -= 1; bra[i] += 1; val *= √bra[i]
+                        α′ = index_of_state[bra]
+                        A′, a′ = space_of_state[α′]
+
+                        s = 0.0 # terms of the sum
+                        J_indices = (-a′+b, -b+c, -c+a)
+                        J_args = (i_j, k_l, m_n)
+                        ΔE1 = E₀[γ] - E₀[α′]
+                        ΔE2 = E₀[β] - E₀[γ]
+                        s += get_R2!(R2, U, ω, f, ΔE1, ΔE2, c-a′, b-c, J_indices, J_args, true)
+                    
+                        J_indices = (a-c, b-a′, c-b)
+                        J_args = (m_n, i_j, k_l)
+                        ΔE1 = E₀[β] - E₀[α]
+                        ΔE2 = E₀[γ] - E₀[β]
+                        s += get_R2!(R2, U, ω, f, ΔE1, ΔE2, b-a, c-b, J_indices, J_args, true)
+                    
+                        J_indices = (c-b, b-a′, a-c)
+                        J_args = (k_l, i_j, m_n)
+                        ΔE1 = E₀[β] - E₀[α′]
+                        ΔE2 = E₀[α′] - E₀[γ]
+                        s -= get_R2!(R2, U, ω, f, ΔE1, ΔE2, b-a′, a′-c, J_indices, J_args, true)
+
+                        ΔE1 = E₀[β] - E₀[α]
+                        ΔE2 = E₀[α] - E₀[γ]
+                        s -= get_R2!(R2, U, ω, f, ΔE1, ΔE2, b-a, a-c, J_indices, J_args, true)
+
+                        key = (a, a′, b, c, A, A′, B, C, i_j, k_l, m_n)
+                        if !haskey(R3, key)
+                            N = 20
+                            t = 0.0
+                            for p in [-N:-1; 1:N], q in [-N:-1; 1:N]
+                                q == p && continue
+                                t += besselj(b-a′-p, f*i_j) * besselj(c-b+p-q, f*k_l) * besselj(a-c+q, f*m_n) * (
+                                        1 / 2(ε[α′] - ε[γ] - q*ω)     * (1/(ε[γ] - ε[β]  - (p-q)*ω) - 1/(ε[β] - ε[α′] + p*ω)) +
+                                        1 / 2(ε[α]  - ε[β] - p*ω)     * (1/(ε[α] - ε[γ]  - q*ω)     - 1/(ε[γ] - ε[β]  - (p-q)*ω)) +
+                                        1 / 6(ε[γ]  - ε[β] - (p-q)*ω) * (1/(ε[β] - ε[α′] + p*ω)     + 1/(ε[α] - ε[γ]  - q*ω)) -
+                                        1 / 3(ε[α]  - ε[γ] - q*ω) / (ε[β] - ε[α′] + p*ω) )
+                            end
+                            R3[key] = t
+                        end
+                        s += R3[key]
+                        val *= s
+                        push_state!(H_rows, H_cols, H_vals, val; row=α′, col=α)
+                    end
+                end
+            end
+        end
+        push_state!(H_rows, H_cols, H_vals, ε[α]; row=α, col=α)
+    end
+    bh.H = sparse(H_rows, H_cols, H_vals)
+end
+
+"Construct the Hamiltonian matrix."
+function constructH_largeU_partial!(bh::BoseHamiltonian, order::Integer)
+    H_rows, H_cols, H_vals = Int[], Int[], Float64[]
+    (;index_of_state, ncells, neis_of_cell) = bh.lattice
+    (;J, U, f, ω, E₀, space_of_state) = bh
+
+    R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
+    R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
     R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int}, Float64}()
     ε = Vector{Float64}(undef, length(E₀)) # energies (including 𝑈 multiplier) reduced to first Floquet zone
     for i in eachindex(E₀)
@@ -554,7 +678,7 @@ function quasienergy(bh::BoseHamiltonian, Us::AbstractVector{<:Real})
         push_state!(H_rows, H_cols, H_vals, val; row=index, col=index)
     end
 
-    nstates = size(bh.H, 1) # change to nstates
+    nstates = size(bh.H, 1)
     n_U = length(Us)
     ε = Matrix{Float64}(undef, nstates, n_U)
     C₀ = Matrix{ComplexF64}(I, nstates, nstates)
@@ -621,9 +745,6 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; para
         BLAS.set_num_threads(1)
 
         progbar = ProgressMeter.Progress(length(Us))
-        ProgressMeter.update!(progbar, 0)
-        loc = Threads.SpinLock()
-        progcount = Threads.Atomic{Int}(0)
 
         Threads.@threads for i in eachindex(Us)
             H_base = copy(H)
@@ -633,11 +754,9 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; para
             sol = solve(prob)
             ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
 
-            Threads.atomic_add!(progcount, 1)
-            Threads.lock(loc)
-            ProgressMeter.update!(progbar, progcount[])
-            Threads.unlock(loc) 
+            ProgressMeter.next!(progbar)
         end
+        ProgressMeter.finish!(progbar)
         BLAS.set_num_threads(n_blas) # restore original number of threads
     else
         @showprogress for (i, U) in enumerate(Us)
