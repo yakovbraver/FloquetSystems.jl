@@ -32,7 +32,7 @@ f = 2
 ω = 20
 -2J * besselj0(f) * nbozons * cos(π/(ncells+1)) # non-periodic: exact ground state energy of 𝑊¹ at 𝑈 = 0; spectrum of 𝑊¹ at 𝑈 = 0 is NOT the exact quasienergy spectrum
 -2J * besselj0(f) * nbozons # periodic: exact ground state energy of 𝑊¹ at 𝑈 = 0; spectrum of 𝑊¹ at 𝑈 = 0 IS the exact quasienergy spectrum
-@time bh = BoseHamiltonian(lattice, J, U, f, ω, type=:smallU, order=1);
+@time bh = BoseHamiltonian(lattice, J, U, f, ω, order=1);
 # @time vals, vecs, info = eigsolve(bh.H, 100, krylovdim=126, :SR)
 vals, vecs = eigen(Symmetric(Matrix(bh.H)))
 scatter(vals, xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"f=%$f", markersize=2, markerstrokewidth=0, c=2, legend=false, ticks=:native)
@@ -46,7 +46,7 @@ heatmap(bh.H, yaxis=:flip, c=:coolwarm)
 nU = 1000
 spectrum = Matrix{Float64}(undef, nstates, nU)
 Us = range(0, 2ω, nU) #.* √1.01
-bh = BoseHamiltonian(lattice, J, U, f, ω, type=:smallU, order=2)
+bh = BoseHamiltonian(lattice, J, U, f, ω, order=2)
 @time for (iU, U) in enumerate(Us)
     update_params!(bh; U)
     # vals, vecs, info = eigsolve(bh.H, nvals, krylovdim=nvals, :SR)
@@ -70,26 +70,26 @@ yaxis!((-10.5, 10.5))
 lattice = Lattice(;dims=(1, 5), nbozons=5, isperiodic=true)
 lattice = Lattice(;dims=(2, 3), nbozons=6, isperiodic=true)
 J = 1 # setting to 1 so that `U` is measured in units of `J`
-ω = 20
+ω = 10
 U = 1
-f = 2
-bh = BoseHamiltonian(lattice, J, U, f, ω, type=:smallU)
+f = 5
+bh = BoseHamiltonian(lattice, J, U, f, ω)
 
 Us = range(0, ω, 300) # 6 bozons, nU = 300 => 9:12
-Us = range(3, 3.5, 300) # 6 bozons, nU = 300 => 9:12
+Us = range(6, 8, 300) # 6 bozons, nU = 300 => 9:12
 ε = quasienergy_dense(bh, Us, parallelise=true)
 minimum(ε[:, 1])
 
 gr()
-fig = scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f"*", exact", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
+fig = scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f"*", exact", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
 scatter!(Us, ε' .+ ω, markersize=0.5, markerstrokewidth=0, c=1);
 scatter!(Us, ε' .- ω, markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
 ylims!(-ω/2, ω/2)
-ylims!(-0.75, -0.4)
-title!("2x3 lattice, exact")
-savefig("2x3-lattice-exact.png")
+ylims!(-2, 2)
+title!(fig, L"F/\omega=%$f, \omega=%$ω"*", 1x5 lattice, exact")
+savefig("f$(f)_w$(ω)_2d3_1x5-exact.png")
 ylims!(1, 2)
-xlims!(0, 3)
+xlims!(Us[1], Us[end])
 for k in [1, 2, 3, 4, 6, 7, 10, 15]
     plot!(fig, [0, 10], [0, 10k], c=:white)
 end
@@ -102,16 +102,17 @@ scatter!(spectrum[:, u], xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=1, m
 sp2 = copy(spectrum)
 
 using DelimitedFiles
-ε_old = readdlm("f5_w10_U1.57-1.7_2x3-exact.txt")
+ε_old = readdlm("f2_w20_U6-8_2x3-exact.txt")
 fig = scatter(ε_old[1, :], ε_old[2:end, :]', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", exact", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
 scatter!(ε_old[1, :], ε_old[2:end, :]' .+ ω, markersize=0.5, markerstrokewidth=0, c=1);
 scatter!(ε_old[1, :], ε_old[2:end, :]' .- ω, markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
 ylims!(-0.6, -0.3)
-xlims!(1.55, 1.7);
+ylims!(0, 2)
+xlims!(6, 8)
 ylims!(-ω/2, ω/2)
 title!(fig, L"F/\omega=%$f, \omega=%$ω"*", 2x3 lattice, exact")
 vline!([10], c=:white)
-savefig("f$(f)_w$(Int(ω))_U0-3_2x3-exact.png")
+savefig("f$(f)_w$(ω)_2d3_2x3-exact.png")
 
 open("f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_2x3-exact.txt", "w") do io
     writedlm(io, vcat(Us', ε))
@@ -138,8 +139,8 @@ scatter!(1:length(bh.E₀), i -> bh.space_of_state[i][1], markersize=1, markerst
 
 lattice = Lattice(;dims=(1, 5), nbozons=5, isperiodic=true)
 lattice = Lattice(;dims=(2, 3), nbozons=6, isperiodic=true)
-@time bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, type=:largeU, order=3);
-scatter!(bh.H[1,:], markersize=1, markerstrokewidth=0)
+@time bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, type=:dpt_quick, order=3);
+scatter(bh.H[1,:], markersize=1, markerstrokewidth=0)
 
 scatter(bh.E₀, markersize=0.5, markerstrokewidth=0)
 range6U = (findfirst(==(6), bh.E₀), findlast(==(6), bh.E₀)) # range of states of energy 6U
@@ -160,27 +161,29 @@ A = 0
 As = findall(s -> s[1] == A, bh.space_of_state) # `As`` stores numbers of state that belong to space `A`
 h = zeros(length(As), length(As)) # reduced matrix of the subspace of interest
 nU = 300
-Us = range(1.57, 1.7, nU)
 spectrum = Matrix{Float64}(undef, length(As), nU)
+Us = range(1.57, 1.7, nU)
+Us = range(6.01, 7.99, nU)
 # scatter(bh.H[diagind(bh.H)][As], markersize=0.5, markerstrokewidth=0)
 
 nU = 300
 spectrum = Matrix{Float64}(undef, size(bh.H, 1), nU)
 Us = range(U₀-1, U₀+1, nU)
-Us = range(6.01, 7.99, nU)
 
-function scan_U!(spectrum, lattice, Us; order)
+function scan_U!(spectrum, lattice, Us, As=Int[]; type, order)
     progbar = Progress(length(Us))
 
     Threads.@threads for iU in eachindex(Us)
-        bh = BoseHamiltonian(lattice, J, Us[iU], f, ω, r; type=:largeU, order);
-        spectrum[:, iU] = eigvals(Symmetric(Matrix(bh.H)))
-    
-        # h = zeros(length(As), length(As)) # reduced matrix of the subspace of interest
-        # for i in eachindex(As), j in i:length(As)
-        #     h[j, i] = bh.H[As[j], As[i]]
-        # end
-        # spectrum[:, iU] = eigvals(Symmetric(h, :L))
+        bh = BoseHamiltonian(lattice, J, Us[iU], f, ω, r; type, order);
+        if type == :dpt
+            spectrum[:, iU] = eigvals(Symmetric(Matrix(bh.H)))
+        else
+            h = zeros(length(As), length(As)) # reduced matrix of the subspace of interest
+            for i in eachindex(As), j in i:length(As)
+                h[j, i] = bh.H[As[j], As[i]]
+            end
+            spectrum[:, iU] = eigvals(Symmetric(h, :L))
+        end
 
         next!(progbar)
     end
@@ -188,7 +191,7 @@ function scan_U!(spectrum, lattice, Us; order)
 end
 
 BLAS.set_num_threads(1)
-scan_U!(spectrum, lattice, Us; order=3)
+scan_U!(spectrum, lattice, Us, As; type=:dpt_quick, order=2)
 
 gr()
 plotlyjs()
@@ -196,24 +199,22 @@ spectrum .%= ω
 spectrum[spectrum .< 0] .+= ω
 figD2 = scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
 scatter!(Us, (spectrum .- ω)', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
-ylims!(-3, 3.5);
+ylims!(-2, 2)
 ylims!(0, 2)
 ylims!(figD2, (-0.6, -0.3))
 ylims!(figD2, (-ω/2, ω/2))
 xlims!(6, 8)
 plot(fig, figD2)
-title!("order = 3")
+title!("order = 2")
 plot!(xlims=(U₀-1, U₀+1), ylims=(-2, 2), title="isolated")
 vline!([U₀], c=:white)
-
-plot(full, no6, no36, isol)
-savefig("f$(f)_w$(ω)_2x3-dpt1.png")
+savefig("f$(f)_w$(ω)_2d3_2x3-dpt2_quick.png")
 
 using DelimitedFiles
 Us = range(12, 15, 1000)
 ε = readdlm("f2_U12-15.txt")
 # Us = range(0, 45, 1000)
-spectrum_file = readdlm("f5_w10_U1.57-1.7_2x3-dpt3.txt")
+spectrum_file = readdlm("f5_w10_U6-8_2x3-dpt3_10min.txt")
 figF = scatter(spectrum_file[1, :], spectrum_file[2:end, :]', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native)
 scatter!(spectrum_file[1, :], spectrum_file[2:end, :]' .+ ω, markersize=0.5, markerstrokewidth=0, c=1);
 scatter!(spectrum_file[1, :], spectrum_file[2:end, :]' .- ω, markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native);
@@ -231,6 +232,6 @@ xlims!(figD3, (6, 8))
 plot(fig, figD3, figD2, layout=(1, 3), link=:y)
 savefig("1x5-3rd-order.png")
 
-open("f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_2x3-dpt3_10min.txt", "w") do io
+open("f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_2x3-dpt3_quick_10min.txt", "w") do io
     writedlm(io, vcat(Us', spectrum))
 end

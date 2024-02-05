@@ -59,7 +59,7 @@ mutable struct BoseHamiltonian
     U::Float64
     f::Float64 # F / ω
     ω::Real
-    type::Symbol
+    type::Symbol # `:dpt`, `:dpt_quick`, or anything else for non-dpt
     order::Int
     space_of_state::Vector{Tuple{Int,Int}}    # space_of_state[i] stores the subspace number (𝐴, 𝑎) of i'th state, with 𝐴 = 0 assigned to all nondegenerate space
     E₀::Vector{Int} # zeroth-order spectrum, in units of 𝑈
@@ -67,7 +67,7 @@ mutable struct BoseHamiltonian
 end
 
 "Construct a `BoseHamiltonian` object defined on `lattice`."
-function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, r::Rational=0//1; order::Integer=1, type::Symbol=:smallU)
+function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, r::Rational=0//1; order::Integer=1, type::Symbol=:basic)
     E₀ = zeros(Int, length(lattice.basis_states))
     for (index, state) in enumerate(lattice.basis_states)
         for n_i in state
@@ -86,10 +86,12 @@ function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, 
         end
     end
     bh = BoseHamiltonian(lattice, float(J), float(U), float(f), float(ω), type, order, space_of_state, E₀, spzeros(Float64, 1, 1))
-    if type == :smallU
-        constructH_smallU!(bh, order)
-    elseif type == :largeU
-        constructH_largeU!(bh, order)
+    if type == :dpt
+        constructH_dpt!(bh, order)
+    elseif type == :dpt_quick
+        constructH_dpt_quick!(bh, order)
+    else
+        constructH!(bh, order)
     end
     return bh
 end
@@ -97,15 +99,17 @@ end
 "Update parameters of `bh` and reconstruct `bh.H`."
 function update_params!(bh::BoseHamiltonian; J::Real=bh.J, U::Real=bh.U, f::Real=bh.f, ω::Real=bh.ω, order::Integer=bh.order, type::Symbol=bh.type)
     bh.J = J; bh.U = U; bh.f = f; bh.ω = ω; bh.order = order; bh.type = type
-    if type == :smallU
-        constructH_smallU!(bh, order)
-    elseif type == :largeU
-        constructH_largeU!(bh, order)
+    if type == :dpt
+        constructH_dpt!(bh, order)
+    elseif type == :dpt_quick
+        constructH_dpt_quick!(bh, order)
+    else
+        constructH!(bh, order)
     end
 end
 
 "Construct the Hamiltonian matrix."
-function constructH_smallU!(bh::BoseHamiltonian, order::Integer)
+function constructH!(bh::BoseHamiltonian, order::Integer)
     (;J, U, f, ω) = bh
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
     H_rows, H_cols, H_vals = Int[], Int[], Float64[]
@@ -188,7 +192,7 @@ function constructH_smallU!(bh::BoseHamiltonian, order::Integer)
 end
 
 "Construct the Hamiltonian matrix for the degenerate case but without DPT. Will work only in 1D, not tested."
-function constructH_largeU_diverging!(bh::BoseHamiltonian, order::Integer)
+function constructH_diverging!(bh::BoseHamiltonian, order::Integer)
     H_rows, H_cols, H_vals = Int[], Int[], Float64[]
     (;J, U, f, ω) = bh
     (;index_of_state, ncells, nbozons, neis_of_cell) = bh.lattice
@@ -316,7 +320,7 @@ function 𝑅(ω::Real, Un::Real, f::Real; type::Integer)
 end
 
 "Construct the Hamiltonian matrix."
-function constructH_largeU!(bh::BoseHamiltonian, order::Integer)
+function constructH_dpt!(bh::BoseHamiltonian, order::Integer)
     H_rows, H_cols, H_vals = Int[], Int[], Float64[]
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
     (;J, U, f, ω, E₀, space_of_state) = bh
@@ -440,7 +444,7 @@ function constructH_largeU!(bh::BoseHamiltonian, order::Integer)
 end
 
 "Construct the Hamiltonian matrix."
-function constructH_largeU_partial!(bh::BoseHamiltonian, order::Integer)
+function constructH_dpt_quick!(bh::BoseHamiltonian, order::Integer)
     H_rows, H_cols, H_vals = Int[], Int[], Float64[]
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
     (;J, U, f, ω, E₀, space_of_state) = bh
