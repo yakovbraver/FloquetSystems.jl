@@ -55,10 +55,10 @@ function Base.show(io::IO, lattice::Lattice)
     println("$(lattice.nbozons) bozons on a $(lattice.isperiodic ? "" : "non")periodic lattice:")
     # print cell numbers
     for i in 1:prod(lattice.dims)
-        print(" $i")
-        i % lattice.dims[2] == 0 && println()
+        print(io, " $i")
+        i % lattice.dims[2] == 0 && println(io)
     end
-    println("Total number of states: $(length(lattice.basis_states))")
+    println(io, "Total number of states: $(length(lattice.basis_states))")
 end
 
 """
