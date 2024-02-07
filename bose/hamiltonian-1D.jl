@@ -50,6 +50,17 @@ function makeneis!(lattice::Lattice)
     end
 end
 
+"Print a textual representation of a `Lattice`."
+function Base.show(io::IO, lattice::Lattice)
+    println("$(lattice.nbozons) bozons on a $(lattice.isperiodic ? "" : "non")periodic lattice:")
+    # print cell numbers
+    for i in 1:prod(lattice.dims)
+        print(" $i")
+        i % lattice.dims[2] == 0 && println()
+    end
+    println("Total number of states: $(length(lattice.basis_states))")
+end
+
 """
 A type representing a Bose-Hubbard Hamiltonian,
     H = - ∑ 𝐽ᵢⱼ 𝑎†ᵢ 𝑎ⱼ, + 𝑈/2 ∑ 𝑛ᵢ(𝑛ᵢ - 1).
