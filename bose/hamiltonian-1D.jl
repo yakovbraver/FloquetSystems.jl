@@ -1,7 +1,8 @@
 using DifferentialEquations, SparseArrays, Combinatorics, SpecialFunctions
-using LinearAlgebra: diagind, eigvals, I, BLAS
+using LinearAlgebra: diagind, diag, eigvals, I, BLAS, mul!
 using ProgressMeter: @showprogress
 import ProgressMeter
+using FLoops: @floop, @init
 
 import Base.show
 
@@ -63,11 +64,12 @@ mutable struct BoseHamiltonian
     order::Int
     space_of_state::Vector{Tuple{Int,Int}}    # space_of_state[i] stores the subspace number (𝐴, 𝑎) of i'th state, with 𝐴 = 0 assigned to all nondegenerate space
     E₀::Vector{Int} # zeroth-order spectrum, in units of 𝑈
-    H::SparseMatrixCSC{Float64, Int} # the Hamiltonian matrix
+    H::Matrix{Float64} # the Hamiltonian matrix
 end
 
 "Construct a `BoseHamiltonian` object defined on `lattice`."
 function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, r::Rational=0//1; order::Integer=1, type::Symbol=:basic)
+    nstates = length(lattice.basis_states)
     E₀ = zeros(Int, length(lattice.basis_states))
     for (index, state) in enumerate(lattice.basis_states)
         for n_i in state
@@ -85,7 +87,7 @@ function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, 
             return (A, a)
         end
     end
-    bh = BoseHamiltonian(lattice, float(J), float(U), float(f), float(ω), type, order, space_of_state, E₀, spzeros(Float64, 1, 1))
+    bh = BoseHamiltonian(lattice, float(J), float(U), float(f), float(ω), type, order, space_of_state, E₀, zeros(nstates, nstates))
     if type == :dpt
         constructH_dpt!(bh, order)
     elseif type == :dpt_quick
@@ -103,6 +105,8 @@ function update_params!(bh::BoseHamiltonian; J::Real=bh.J, U::Real=bh.U, f::Real
         constructH_dpt!(bh, order)
     elseif type == :dpt_quick
         constructH_dpt_quick!(bh, order)
+    elseif type == :diverging
+        constructH_diverging!(bh, order)
     else
         constructH!(bh, order)
     end
@@ -110,9 +114,11 @@ end
 
 "Construct the Hamiltonian matrix."
 function constructH!(bh::BoseHamiltonian, order::Integer)
-    (;J, U, f, ω) = bh
+    (;J, U, f, ω, H) = bh
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
-    H_rows, H_cols, H_vals = Int[], Int[], Float64[]
+    H .= 0
+    H[diagind(H)] .= bh.E₀ .* U
+
     Jeff = J * besselj0(f)
 
     J_sum = [0.0, 0.0]
@@ -123,22 +129,17 @@ function constructH!(bh::BoseHamiltonian, order::Integer)
     end
 
     # take each basis state and find which transitions are possible
-    for (state, index) in index_of_state
-        val_d = 0.0 # diagonal value
+    for (ket, α) in index_of_state
         for i = 1:ncells # iterate over the terms of the Hamiltonian
-            # 𝑛ᵢ(𝑛ᵢ - 1)
-            if (state[i] > 1)
-                val_d += U/2 * state[i] * (state[i] - 1)
-            end
             # 𝑎†ᵢ 𝑎ⱼ
             for (j, _) in neis_of_cell[i]
-                if (state[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
-                    val = -Jeff * sqrt( (state[i]+1) * state[j] )
-                    bra = copy(state)
+                if (ket[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
+                    val = -Jeff * sqrt( (ket[i]+1) * ket[j] )
+                    bra = copy(ket)
                     bra[j] -= 1
                     bra[i] += 1
-                    row = index_of_state[bra]
-                    push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                    α′ = index_of_state[bra]
+                    H[α′, α] += val
                 end
             end
 
@@ -146,56 +147,56 @@ function constructH!(bh::BoseHamiltonian, order::Integer)
                 for (j, _) in neis_of_cell[i], (k, _) in neis_of_cell[i]
                     C₁, C₂ = j == k ? J_sum : (J_sum[2], J_sum[1])
                     # 𝑎†ₖ (2𝑛ᵢ - 𝑛ⱼ) 𝑎ⱼ
-                    if (state[j] > 0 && state[i] != state[j]-1)
-                        val = C₁ * √( (k == j ? state[k] : state[k]+1) * state[j] ) * (2state[i] - (state[j]-1))
-                        bra = copy(state)
+                    if (ket[j] > 0 && ket[i] != ket[j]-1)
+                        val = C₁ * √( (k == j ? ket[k] : ket[k]+1) * ket[j] ) * (2ket[i] - (ket[j]-1))
+                        bra = copy(ket)
                         bra[j] -= 1
                         bra[k] += 1
-                        row = index_of_state[bra]
-                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                        α′ = index_of_state[bra]
+                        H[α′, α] += val
                     end
                     # 𝑎†ⱼ (2𝑛ᵢ - 𝑛ⱼ) 𝑎ₖ
-                    if (state[k] > 0 && state[i] != (j == k ? state[j]-1 : state[j]))
-                        val = C₁ * √( (j == k ? state[j] : state[j]+1) * state[k] ) * (2state[i] - (j == k ? state[j]-1 : state[j]))
-                        bra = copy(state)
+                    if (ket[k] > 0 && ket[i] != (j == k ? ket[j]-1 : ket[j]))
+                        val = C₁ * √( (j == k ? ket[j] : ket[j]+1) * ket[k] ) * (2ket[i] - (j == k ? ket[j]-1 : ket[j]))
+                        bra = copy(ket)
                         bra[k] -= 1
                         bra[j] += 1
-                        row = index_of_state[bra]
-                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                        α′ = index_of_state[bra]
+                        H[α′, α] += val
                     end
                     # 𝑎†ᵢ 𝑎†ᵢ 𝑎ₖ 𝑎ⱼ
-                    if ( (k == j && state[j] > 1) || (k != j && state[k] > 0 && state[j] > 0))
-                        val = -C₂ * √( (state[i]+2) * (state[i]+1) * (k == j ? (state[j]-1)state[j] : state[j]state[k]))
-                        bra = copy(state)
+                    if ( (k == j && ket[j] > 1) || (k != j && ket[k] > 0 && ket[j] > 0))
+                        val = -C₂ * √( (ket[i]+2) * (ket[i]+1) * (k == j ? (ket[j]-1)ket[j] : ket[j]ket[k]))
+                        bra = copy(ket)
                         bra[j] -= 1
                         bra[k] -= 1
                         bra[i] += 2
-                        row = index_of_state[bra]
-                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                        α′ = index_of_state[bra]
+                        H[α′, α] += val
                     end
                     # 𝑎†ₖ 𝑎†ⱼ 𝑎ᵢ 𝑎ᵢ
-                    if (state[i] > 1)
-                        val = -C₂ * √( (k == j ? (state[j]+2) * (state[j]+1) : (state[k]+1) * (state[j]+1)) * (state[i]-1)state[i])
-                        bra = copy(state)
+                    if (ket[i] > 1)
+                        val = -C₂ * √( (k == j ? (ket[j]+2) * (ket[j]+1) : (ket[k]+1) * (ket[j]+1)) * (ket[i]-1)ket[i])
+                        bra = copy(ket)
                         bra[i] -= 2
                         bra[j] += 1
                         bra[k] += 1
-                        row = index_of_state[bra]
-                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                        α′ = index_of_state[bra]
+                        H[α′, α] += val
                     end
                 end
             end
         end
-        push_state!(H_rows, H_cols, H_vals, val_d; row=index, col=index)
     end
-    bh.H = sparse(H_rows, H_cols, H_vals)
 end
 
-"Construct the Hamiltonian matrix for the degenerate case but without DPT. Will work only in 1D, not tested."
+"Construct the Hamiltonian matrix for the degenerate case but without DPT. Works only in 1D."
 function constructH_diverging!(bh::BoseHamiltonian, order::Integer)
-    H_rows, H_cols, H_vals = Int[], Int[], Float64[]
-    (;J, U, f, ω) = bh
+    (;J, U, f, ω, H) = bh
     (;index_of_state, ncells, nbozons, neis_of_cell) = bh.lattice
+    H .= 0
+    H[diagind(H)] .= bh.E₀ .* U
+
     Jeff = J * besselj0(f)
 
     n_max = nbozons - 1
@@ -211,13 +212,8 @@ function constructH_diverging!(bh::BoseHamiltonian, order::Integer)
     ks = Vector{Int}(undef, 12)
     ls = Vector{Int}(undef, 12)
     # take each basis state and find which transitions are possible
-    for (state, index) in index_of_state
-        val_d = 0.0 # diagonal value
+    for (ket, α) in index_of_state
         for i = 1:ncells # iterate over the terms of the Hamiltonian
-            # 𝑛ᵢ(𝑛ᵢ - 1)
-            if (state[i] > 1)
-                val_d += U/2 * state[i] * (state[i] - 1)
-            end
             # 𝑎†ᵢ 𝑎ⱼ
             for j in (i-1, i+1)
                 if j == 0
@@ -227,13 +223,13 @@ function constructH_diverging!(bh::BoseHamiltonian, order::Integer)
                     !bh.lattice.isperiodic && continue
                     j = 1
                 end
-                if (state[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
-                    val = -Jeff * sqrt( (state[i]+1) * state[j] )
-                    bra = copy(state)
+                if (ket[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
+                    val = -Jeff * sqrt( (ket[i]+1) * ket[j] )
+                    bra = copy(ket)
                     bra[j] -= 1
                     bra[i] += 1
-                    row = index_of_state[bra]
-                    push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                    α′ = index_of_state[bra]
+                    H[α′, α] += val
                 end
             end
 
@@ -259,10 +255,10 @@ function constructH_diverging!(bh::BoseHamiltonian, order::Integer)
                     end
 
                     # 𝑎†ᵢ 𝑎ⱼ [𝑏𝜔+𝑈(𝑛ₖ-𝑛ₗ-1)]⁻¹ 𝑎†ₖ 𝑎ₗ
-                    if ( state[l] > 0 && (j == k || (j == l && state[j] > 1) || (j != l && state[j] > 0)) )
+                    if ( ket[l] > 0 && (j == k || (j == l && ket[j] > 1) || (j != l && ket[j] > 0)) )
                         R = i-j == k-l ? R1 : R2
                         val = -J^2/2
-                        bra = copy(state)
+                        bra = copy(ket)
                         val *= √bra[l]
                         bra[l] -= 1
                         bra[k] += 1
@@ -271,15 +267,15 @@ function constructH_diverging!(bh::BoseHamiltonian, order::Integer)
                         bra[j] -= 1
                         bra[i] += 1
                         val *= √bra[i]
-                        row = index_of_state[bra]
-                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                        α′ = index_of_state[bra]
+                        H[α′, α] += val
                     end
 
                     # [𝑏𝜔+𝑈(𝑛ₖ-𝑛ₗ-1)]⁻¹ 𝑎†ₖ 𝑎ₗ 𝑎†ᵢ 𝑎ⱼ 
-                    if ( state[j] > 0 && (l == i || (l == j && state[l] > 1) || (l != j && state[l] > 0)) )
+                    if ( ket[j] > 0 && (l == i || (l == j && ket[l] > 1) || (l != j && ket[l] > 0)) )
                         R = i-j == k-l ? R1 : R2
                         val = +J^2/2
-                        bra = copy(state)
+                        bra = copy(ket)
                         val *= √bra[j]
                         bra[j] -= 1
                         bra[i] += 1
@@ -288,15 +284,13 @@ function constructH_diverging!(bh::BoseHamiltonian, order::Integer)
                         bra[l] -= 1
                         bra[k] += 1
                         val *= R[bra[k] - bra[l] - 1] * √bra[k]
-                        row = index_of_state[bra]
-                        push_state!(H_rows, H_cols, H_vals, val; row, col=index)
+                        α′ = index_of_state[bra]
+                        H[α′, α] += val
                     end
                 end
             end
         end
-        push_state!(H_rows, H_cols, H_vals, val_d; row=index, col=index)
     end
-    bh.H = sparse(H_rows, H_cols, H_vals)
 end
 
 function 𝑅(ω::Real, Un::Real, f::Real; type::Integer)
@@ -321,17 +315,19 @@ end
 
 "Construct the Hamiltonian matrix."
 function constructH_dpt!(bh::BoseHamiltonian, order::Integer)
-    H_rows, H_cols, H_vals = Int[], Int[], Float64[]
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
-    (;J, U, f, ω, E₀, space_of_state) = bh
-
-    R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
-    R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
-    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Int}, Float64}()
+    (;J, U, f, ω, E₀, space_of_state, H) = bh
+    
     ε = Vector{Float64}(undef, length(E₀)) # energies (including 𝑈 multiplier) reduced to first Floquet zone
     for i in eachindex(E₀)
         ε[i] = E₀[i]*U - space_of_state[i][2]*ω
     end
+    H .= 0
+    H[diagind(H)] .= ε
+
+    R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
+    R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
+    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Int}, Float64}()
     # take each basis state and find which transitions are possible
     for (ket, α) in index_of_state
         A, a = space_of_state[α]
@@ -345,7 +341,7 @@ function constructH_dpt!(bh::BoseHamiltonian, order::Integer)
                     α′ = index_of_state[bra]
                     A′, a′ = space_of_state[α′]
                     val = -J * besselj(a - a′, f*i_j) * sqrt( (ket[i]+1) * ket[j] )
-                    push_state!(H_rows, H_cols, H_vals, val; row=α′, col=α)
+                    H[α′, α] += val
                 end
             end
 
@@ -369,7 +365,7 @@ function constructH_dpt!(bh::BoseHamiltonian, order::Integer)
                             val *= √bra[i]
                             val *= (get_R!(R, U, ω, f, bra[i]-bra[j]-1, a′-b, i_j, k_l, a′, a, b, true) +
                                     get_R!(R, U, ω, f, ket[l]-ket[k]-1, a-b, i_j, k_l, a′, a, b, true))
-                            push_state!(H_rows, H_cols, H_vals, val; row=α′, col=α)
+                            H[α′, α] += val
                         end
                     end
                 end
@@ -433,29 +429,29 @@ function constructH_dpt!(bh::BoseHamiltonian, order::Integer)
                         end
                         s += R3[key]
                         val *= s
-                        push_state!(H_rows, H_cols, H_vals, val; row=α′, col=α)
+                        H[α′, α] += val
                     end
                 end
             end
         end
-        push_state!(H_rows, H_cols, H_vals, ε[α]; row=α, col=α)
     end
-    bh.H = sparse(H_rows, H_cols, H_vals)
 end
 
 "Construct the Hamiltonian matrix."
 function constructH_dpt_quick!(bh::BoseHamiltonian, order::Integer)
-    H_rows, H_cols, H_vals = Int[], Int[], Float64[]
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
-    (;J, U, f, ω, E₀, space_of_state) = bh
-
-    R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
-    R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
-    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int}, Float64}()
+    (;J, U, f, ω, E₀, space_of_state, H) = bh
     ε = Vector{Float64}(undef, length(E₀)) # energies (including 𝑈 multiplier) reduced to first Floquet zone
     for i in eachindex(E₀)
         ε[i] = E₀[i]*U - space_of_state[i][2]*ω
     end
+    H .= 0
+    H[diagind(H)] .= ε
+
+    R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
+    R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
+    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int}, Float64}()
+    
     # take each basis state and find which transitions are possible
     for (ket, α) in index_of_state
         A, a = space_of_state[α]
@@ -470,7 +466,7 @@ function constructH_dpt_quick!(bh::BoseHamiltonian, order::Integer)
                     A′, a′ = space_of_state[α′]
                     if A′ == A # proceed only if bra is in the same degenerate space
                         val = -J * besselj(a - a′, f*i_j) * sqrt( (ket[i]+1) * ket[j] )
-                        push_state!(H_rows, H_cols, H_vals, val; row=α′, col=α)
+                        H[α′, α] += val
                     end
                 end
             end
@@ -497,7 +493,7 @@ function constructH_dpt_quick!(bh::BoseHamiltonian, order::Integer)
                                 skipzero = (B == A)
                                 val *= (get_R!(R, U, ω, f, bra[i]-bra[j]-1, a′-b, i_j, k_l, a′, a, b, skipzero) +
                                         get_R!(R, U, ω, f, ket[l]-ket[k]-1, a-b, i_j, k_l, a′, a, b, skipzero))
-                                push_state!(H_rows, H_cols, H_vals, val; row=α′, col=α)
+                                H[α′, α] += val
                             end
                         end
                     end
@@ -570,15 +566,13 @@ function constructH_dpt_quick!(bh::BoseHamiltonian, order::Integer)
                             end
                             s += R3[key]
                             val *= s
-                            push_state!(H_rows, H_cols, H_vals, val; row=α′, col=α)
+                            H[α′, α] += val
                         end
                     end
                 end
             end
         end
-        push_state!(H_rows, H_cols, H_vals, ε[α]; row=α, col=α)
     end
-    bh.H = sparse(H_rows, H_cols, H_vals)
 end
 
 function push_state!(H_rows, H_cols, H_vals, val; row, col)
@@ -639,9 +633,8 @@ end
 
 "Print non-zero elements of the Hamiltonian `bh` in the format ⟨bra| Ĥ |ket⟩."
 function Base.show(io::IO, bh::BoseHamiltonian)
-    H_rows, H_cols, H_vals = findnz(bh.H)
-    for (i, j, val) in zip(H_rows, H_cols, H_vals) # iterate over the terms of the Hamiltonian
-        println(io, bh.lattice.basis_states[i], " Ĥ ", bh.lattice.basis_states[j], " = ", round(val, sigdigits=3))
+    for C in CartesianIndices(bh.H)
+        bh.H[C[1], C[2]] != 0 && println(io, bh.lattice.basis_states[C[1]], " Ĥ ", bh.lattice.basis_states[C[2]], " = ", round(bh.H[C[1], C[2]], sigdigits=3))
     end
 end
 
@@ -720,18 +713,18 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; para
 
     # Construct the Hamiltonian with `f` = 0
     # off-diagonal elements 𝑎†ᵢ 𝑎ⱼ
-    for (state, index) in index_of_state
+    for (ket, α) in index_of_state
         for i = 1:ncells # iterate over the terms of the Hamiltonian
             for (j, s) in neis_of_cell[i]
                 # 𝑎†ᵢ 𝑎ⱼ
-                if (state[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
-                    val = -im * -J * sqrt( (state[i]+1) * state[j] ) # multiply by `-im` as on the rhs of ∂ₜ𝜓 = -i𝐻𝜓
-                    bra = copy(state)
+                if (ket[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
+                    val = -im * -J * sqrt( (ket[i]+1) * ket[j] ) # multiply by `-im` as on the rhs of ∂ₜ𝜓 = -i𝐻𝜓
+                    bra = copy(ket)
                     bra[j] -= 1
                     bra[i] += 1
-                    row = index_of_state[bra]
-                    H[row, index] = val
-                    H_sign[row, index] = s
+                    α′ = index_of_state[bra]
+                    H[α′, α] = val
+                    H_sign[α′, α] = s
                 end
             end
         end
@@ -748,24 +741,32 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; para
         n_blas = BLAS.get_num_threads() # save original number of threads to restore later
         BLAS.set_num_threads(1)
 
-        progbar = ProgressMeter.Progress(length(Us))
+        # progbar = ProgressMeter.Progress(length(Us)) # makes cores stop periodically when using floop
 
-        Threads.@threads for i in eachindex(Us)
-            H_base = copy(H)
-            H_base[diagind(H_base)] .= Us[i] .* (-im .* E₀)
-            params = (H_base, H_sign, f, ω)
+        @floop for (i, U) in enumerate(Us)
+            @init begin
+                H_base = copy(H) # diagonal of `H_base` will be mutated depending on `U`
+                # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving,
+                # while off-diagnoal elemnts will be mutated at each step
+                H_buff = zeros(ComplexF64, nstates, nstates)
+            end
+            H_base[diagind(H_base)] .= U .* (-im .* E₀)
+            H_buff[diagind(H_base)] .= diag(H_base)
+            params = (H_buff, H_base, H_sign, ω, f)
             prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
             sol = solve(prob)
             ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
 
-            ProgressMeter.next!(progbar)
+            # ProgressMeter.next!(progbar)
         end
-        ProgressMeter.finish!(progbar)
+        # ProgressMeter.finish!(progbar)
         BLAS.set_num_threads(n_blas) # restore original number of threads
     else
         @showprogress for (i, U) in enumerate(Us)
             H[diagind(H)] .= U .* (-im .* E₀)
-            params = (H, H_sign, f, ω)
+            H_buff = zeros(ComplexF64, nstates, nstates)
+            H_buff[diagind(H)] .= diag(H)
+            params = (H_buff, H, H_sign, ω, f)
             prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
             sol = solve(prob)
             ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
@@ -777,8 +778,14 @@ end
 
 "Update rhs operator (used for monodromy matrix calculation)."
 function schrodinger!(du, u, p, t)
-    H_base, H_sign, f, ω = p
-    H = copy(H_base)
-    H .*= cis.(f .* sin(ω.*t) .* H_sign) # update off diagonal elements of the Hamiltonian
-    du .= H * u
+    H_buff, H_base, H_sign, ω, f = p
+    p = cis(f * sin(ω*t)); n = cis(-f * sin(ω*t));
+    for (i, s) in enumerate(H_sign)
+        if s > 0 
+            H_buff[i] = H_base[i] * p
+        elseif s < 0
+            H_buff[i] = H_base[i] * n
+        end
+    end
+    mul!(du, H_buff, u)
 end
