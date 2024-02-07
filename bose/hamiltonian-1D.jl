@@ -312,7 +312,7 @@ function constructH_dpt!(bh::BoseHamiltonian, order::Integer)
 
     R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
     R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
-    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Int}, Float64}()
+    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int}, Float64}()
     # take each basis state and find which transitions are possible
     for (ket, α) in index_of_state
         A, a = space_of_state[α]
@@ -398,7 +398,7 @@ function constructH_dpt!(bh::BoseHamiltonian, order::Integer)
                         ΔE2 = E₀[α] - E₀[γ]
                         s -= get_R2!(R2, U, ω, f, ΔE1, ΔE2, b-a, a-c, J_indices, J_args, true)
 
-                        key = (a, a′, b, c, A, A′, B, C, i_j, k_l, m_n)
+                        key = (E₀[α], E₀[β], E₀[γ], E₀[α′], i_j, k_l, m_n)
                         if !haskey(R3, key)
                             N = 20
                             t = 0.0
@@ -435,7 +435,7 @@ function constructH_dpt_quick!(bh::BoseHamiltonian, order::Integer)
 
     R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
     R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float64}()
-    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int}, Float64}()
+    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int}, Float64}()
     
     # take each basis state and find which transitions are possible
     for (ket, α) in index_of_state
@@ -531,9 +531,7 @@ function constructH_dpt_quick!(bh::BoseHamiltonian, order::Integer)
                                 s -= get_R2!(R2, U, ω, f, ΔE1, ΔE2, b-a, a-c, J_indices, J_args, B == C)
                             end
 
-                            # skip = (A == B && A == C) ? 1 : (A == B && B != C) ? 2 : (A == C && B != C) ? 3 : (A != B && B == C) ? 4 : 5
-                            # key = (a, a′, b, c, A, A′, B, C, i_j, k_l, m_n, skip)
-                            key = (a, a′, b, c, A, B, C, i_j, k_l, m_n)
+                            key = (E₀[α], E₀[β], E₀[γ], E₀[α′], i_j, k_l, m_n)
                             if !haskey(R3, key)
                                 N = 20
                                 t = 0.0

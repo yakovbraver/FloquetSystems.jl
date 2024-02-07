@@ -121,8 +121,8 @@ end
 # degenerate theory
 
 J = 1 # setting to 1 so that `U` is measured in units of `J`
-f = 5
-ω = 10
+f = 2
+ω = 20
 
 r = 2//3
 r = 1//6
@@ -139,7 +139,7 @@ scatter!(1:length(bh.E₀), i -> bh.space_of_state[i][1], markersize=1, markerst
 
 lattice = Lattice(;dims=(1, 5), nbozons=5, isperiodic=true)
 lattice = Lattice(;dims=(2, 3), nbozons=6, isperiodic=true)
-@time bh = BoseHamiltonian(lattice, J, U₀-1, f, ω, r, type=:dpt_quick, order=3);
+@time bh = BoseHamiltonian(lattice, J, U₀-1, f, ω, r, type=:dpt, order=1);
 scatter(bh.H[1,:], markersize=1, markerstrokewidth=0)
 bh.H[2, 2]
 
@@ -169,10 +169,13 @@ Us = range(6.01, 7.99, nU)
 
 nU = 300
 spectrum = Matrix{Float64}(undef, size(bh.H, 1), nU)
-Us = range(6.01, 7.99, nU)
 Us = range(U₀-1, U₀+1, nU)
+Us = range(6.01, 7.99, nU)
 
 function scan_U!(spectrum, lattice, Us, As=Int[]; type, order)
+    n_blas = BLAS.get_num_threads() # save original number of threads to restore later
+    BLAS.set_num_threads(1)
+    
     progbar = Progress(length(Us))
 
     Threads.@threads for iU in eachindex(Us)
@@ -190,10 +193,10 @@ function scan_U!(spectrum, lattice, Us, As=Int[]; type, order)
         next!(progbar)
     end
     finish!(progbar)
+    BLAS.set_num_threads(n_blas)
 end
 
-BLAS.set_num_threads(1)
-scan_U!(spectrum, lattice, Us, As; type=:dpt, order=3)
+scan_U!(spectrum, lattice, Us, As; type=:dpt_quick, order=3)
 
 gr()
 plotlyjs()
@@ -202,7 +205,7 @@ spectrum[spectrum .< 0] .+= ω
 figD2 = scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
 scatter!(Us, (spectrum .- ω)', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
 ylims!(-2, 2)
-ylims!(0, 2)
+ylims!(0, 3)
 ylims!(figD2, (-0.6, -0.3))
 ylims!(figD2, (-ω/2, ω/2))
 xlims!(6, 8)
