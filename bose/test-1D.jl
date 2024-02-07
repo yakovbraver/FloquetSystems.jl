@@ -46,7 +46,7 @@ heatmap(bh.H, yaxis=:flip, c=:coolwarm)
 nU = 1000
 spectrum = Matrix{Float64}(undef, length(lattice.basis_states), nU)
 Us = range(0, 2ω, nU) #.* √1.01
-bh = BoseHamiltonian(lattice, J, U, f, ω, order=2)
+bh = BoseHamiltonian(lattice, J, U, f, ω, order=2, type=:diverging)
 @time for (iU, U) in enumerate(Us)
     update_params!(bh; U)
     spectrum[:, iU] = eigvals(Symmetric(Matrix(bh.H)))

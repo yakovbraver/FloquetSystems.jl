@@ -190,7 +190,10 @@ function constructH!(bh::BoseHamiltonian, order::Integer)
     end
 end
 
-"Construct the Hamiltonian matrix for the degenerate case but without DPT. Works only in 1D."
+"""
+Construct the Hamiltonian matrix for the degenerate case but without DPT.
+We do not assume that 𝑈 ≪ 𝜔, but we do not use DPT either, leading to diverging results.
+"""
 function constructH_diverging!(bh::BoseHamiltonian, order::Integer)
     (;J, U, f, ω, H) = bh
     (;index_of_state, ncells, nbozons, neis_of_cell) = bh.lattice
@@ -208,21 +211,11 @@ function constructH_diverging!(bh::BoseHamiltonian, order::Integer)
         R2[n] = 𝑅(ω, U*n, f, type=2)
     end
 
-    js = Vector{Int}(undef, 12)
-    ks = Vector{Int}(undef, 12)
-    ls = Vector{Int}(undef, 12)
     # take each basis state and find which transitions are possible
     for (ket, α) in index_of_state
         for i = 1:ncells # iterate over the terms of the Hamiltonian
             # 𝑎†ᵢ 𝑎ⱼ
-            for j in (i-1, i+1)
-                if j == 0
-                    !bh.lattice.isperiodic && continue
-                    j = ncells
-                elseif j == ncells + 1
-                    !bh.lattice.isperiodic && continue
-                    j = 1
-                end
+            for (j, _) in neis_of_cell[i]
                 if (ket[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
                     val = -Jeff * sqrt( (ket[i]+1) * ket[j] )
                     bra = copy(ket)
@@ -233,30 +226,11 @@ function constructH_diverging!(bh::BoseHamiltonian, order::Integer)
                 end
             end
 
-            js[1:6] .= i-1; js[7:12] .= i+1;
-            ks .= [i-2, i-1, i-1, i, i, i+1, i-1, i, i, i+1, i+1, i+2]
-            ls .= [i-1, i-2, i, i-1, i+1, i, i, i-1, i+1, i, i+2, i+1]
             if order == 2
-                for (j, k, l) in zip(js, ks, ls)
-                    if j < 1
-                        j = ncells + j
-                    elseif j > ncells
-                        j = j - ncells
-                    end
-                    if k < 1
-                        k = ncells + k
-                    elseif k > ncells
-                        k = k - ncells
-                    end
-                    if l < 1
-                        l = ncells + l
-                    elseif l > ncells
-                        l = l - ncells
-                    end
-
+                for (j, i_j) in neis_of_cell[i], k in 1:ncells, (l, k_l) in neis_of_cell[k]
                     # 𝑎†ᵢ 𝑎ⱼ [𝑏𝜔+𝑈(𝑛ₖ-𝑛ₗ-1)]⁻¹ 𝑎†ₖ 𝑎ₗ
                     if ( ket[l] > 0 && (j == k || (j == l && ket[j] > 1) || (j != l && ket[j] > 0)) )
-                        R = i-j == k-l ? R1 : R2
+                        R = i_j == k_l ? R1 : R2
                         val = -J^2/2
                         bra = copy(ket)
                         val *= √bra[l]
@@ -273,7 +247,7 @@ function constructH_diverging!(bh::BoseHamiltonian, order::Integer)
 
                     # [𝑏𝜔+𝑈(𝑛ₖ-𝑛ₗ-1)]⁻¹ 𝑎†ₖ 𝑎ₗ 𝑎†ᵢ 𝑎ⱼ 
                     if ( ket[j] > 0 && (l == i || (l == j && ket[l] > 1) || (l != j && ket[l] > 0)) )
-                        R = i-j == k-l ? R1 : R2
+                        R = i_j == k_l ? R1 : R2
                         val = +J^2/2
                         bra = copy(ket)
                         val *= √bra[j]
