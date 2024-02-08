@@ -1,5 +1,5 @@
 using DifferentialEquations, SparseArrays, Combinatorics, SpecialFunctions
-using LinearAlgebra: diagind, diag, eigvals, I, BLAS, mul!
+using LinearAlgebra: diagind, diag, eigvals, mul!, Symmetric, I, BLAS
 using ProgressMeter: @showprogress
 import ProgressMeter
 using FLoops: @floop, @init
@@ -18,13 +18,31 @@ struct Lattice
 end
 
 "Construct a `Lattice` object."
-function Lattice(;dims::Tuple{Int,Int}, nbozons::Integer, isperiodic::Bool)
+function Lattice(;dims::Tuple{Int,Int}, nbozons::Integer=prod(dims), isperiodic::Bool)
     ncells = prod(dims)
     nstates = binomial(nbozons+ncells-1, nbozons)
     lattice = Lattice(ncells, nbozons, dims, isperiodic, Vector{Vector{Int}}(undef, nstates), Dict{Vector{Int},Int}(), Vector{Vector{Tuple{Int,Int}}}(undef, nstates))
     makebasis!(lattice)
     makeneis!(lattice)
     return lattice
+end
+
+"""
+Generate all possible combinations of placing the bozons in the lattice.
+Populate `lattice.basis_states` and `lattice.index_of_state`.
+"""
+function makebasis!(lattice::Lattice)
+    index = 1 # unique index identifying the state
+    (;ncells, nbozons) = lattice
+    for partition in integer_partitions(nbozons)
+        length(partition) > ncells && continue # Example (nbozons = 3, ncells = 2): partition = [[3,0], [2,1], [1,1,1]] -- skip [1,1,1] as impossible
+        append!(partition, zeros(ncells-length(partition)))
+        for p in multiset_permutations(partition, ncells)
+            lattice.index_of_state[p] = index
+            lattice.basis_states[index] = p
+            index += 1
+        end
+    end
 end
 
 "Fill `lattice.neis_of_cell`."
@@ -70,7 +88,7 @@ mutable struct BoseHamiltonian
     J::Float64
     U::Float64
     f::Float64 # F / ω
-    ω::Real
+    ω::Float64
     type::Symbol # `:dpt`, `:dpt_quick`, or anything else for non-dpt
     order::Int
     space_of_state::Vector{Tuple{Int,Int}}    # space_of_state[i] stores the subspace number (𝐴, 𝑎) of i'th state, with 𝐴 = 0 assigned to all nondegenerate space
@@ -107,6 +125,13 @@ function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, 
         constructH!(bh, order)
     end
     return bh
+end
+
+"Print non-zero elements of the Hamiltonian `bh` in the format ⟨bra| Ĥ |ket⟩."
+function Base.show(io::IO, bh::BoseHamiltonian)
+    for C in CartesianIndices(bh.H)
+        bh.H[C[1], C[2]] != 0 && println(io, bh.lattice.basis_states[C[1]], " Ĥ ", bh.lattice.basis_states[C[2]], " = ", round(bh.H[C[1], C[2]], sigdigits=3))
+    end
 end
 
 "Update parameters of `bh` and reconstruct `bh.H`."
@@ -596,29 +621,43 @@ function get_R2!(R, U, ω, f, ΔE1, ΔE2, d1, d2, J_indices, J_args, skipzero)
     return R[key]
 end
 
+"""Calculate and return the spectrum for the values of 𝑈 in `Us`, using degenerate theory: `type` should be `:dpt` or `:dpt_quick`.
+If `type=:dpt_quick`, then `subspace` must contain the subspace number (as in `bh.space_of_state[:][1]`) of interest.
+`bh` is used as a parameter holder, but `bh.U`, `bh.type`, and `bh.order` do not matter --- function arguments are used instead.
 """
-Generate all possible combinations of placing the bozons in the lattice.
-Populate `lattice.basis_states` and `lattice.index_of_state`.
-"""
-function makebasis!(lattice::Lattice)
-    index = 1 # unique index identifying the state
-    (;ncells, nbozons) = lattice
-    for partition in integer_partitions(nbozons)
-        length(partition) > ncells && continue # Example (nbozons = 3, ncells = 2): partition = [[3,0], [2,1], [1,1,1]] -- skip [1,1,1] as impossible
-        append!(partition, zeros(ncells-length(partition)))
-        for p in multiset_permutations(partition, ncells)
-            lattice.index_of_state[p] = index
-            lattice.basis_states[index] = p
-            index += 1
-        end
-    end
-end
+function scan_U(bh0::BoseHamiltonian, r::Rational, Us::AbstractVector{<:Real}, subspace::Integer=0; type::Symbol, order::Integer)
+    (;J, f, ω) = bh0
 
-"Print non-zero elements of the Hamiltonian `bh` in the format ⟨bra| Ĥ |ket⟩."
-function Base.show(io::IO, bh::BoseHamiltonian)
-    for C in CartesianIndices(bh.H)
-        bh.H[C[1], C[2]] != 0 && println(io, bh.lattice.basis_states[C[1]], " Ĥ ", bh.lattice.basis_states[C[2]], " = ", round(bh.H[C[1], C[2]], sigdigits=3))
+    n_blas = BLAS.get_num_threads() # save original number of threads to restore later
+    BLAS.set_num_threads(1)
+    
+    progbar = ProgressMeter.Progress(length(Us))
+    if type == :dpt
+        spectrum = Matrix{Float64}(undef, size(bh0.H, 1), length(Us))
+        Threads.@threads for iU in eachindex(Us)
+            bh = BoseHamiltonian(bh0.lattice, J, Us[iU], f, ω, r; type, order);
+            spectrum[:, iU] = eigvals(Symmetric(bh.H))
+            ProgressMeter.next!(progbar)
+        end
+    elseif type == :dpt_quick
+        As = findall(s -> s[1] == subspace, bh0.space_of_state) # `As`` stores numbers of state that belong to space `A`
+        spectrum = Matrix{Float64}(undef, size(bh0.H, 1), length(As))
+        h = zeros(length(As), length(As)) # reduced matrix of the subspace of interest
+        Threads.@threads for iU in eachindex(Us)
+            bh = BoseHamiltonian(bh0.lattice, J, Us[iU], f, ω, r; type, order);
+            for i in eachindex(As), j in i:length(As)
+                h[j, i] = bh.H[As[j], As[i]]
+            end
+            spectrum[:, iU] = eigvals(Symmetric(h, :L))
+            ProgressMeter.next!(progbar)
+        end
+    else
+        @error "Unknown type" type
+        spectrum = zeros(1, 1)
     end
+    ProgressMeter.finish!(progbar)
+    BLAS.set_num_threads(n_blas)
+    return spectrum
 end
 
 "Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`."
@@ -760,8 +799,8 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; para
 end
 
 "Update rhs operator (used for monodromy matrix calculation)."
-function schrodinger!(du, u, p, t)
-    H_buff, H_base, H_sign, ω, f = p
+function schrodinger!(du, u, params, t)
+    H_buff, H_base, H_sign, ω, f = params
     p = cis(f * sin(ω*t)); n = cis(-f * sin(ω*t));
     for (i, s) in enumerate(H_sign)
         if s > 0 
