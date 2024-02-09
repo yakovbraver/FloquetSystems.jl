@@ -640,10 +640,10 @@ function scan_U(bh0::BoseHamiltonian, r::Rational, Us::AbstractVector{<:Real}, s
             ProgressMeter.next!(progbar)
         end
     elseif type == :dpt_quick
-        As = findall(s -> s[1] == subspace, bh0.space_of_state) # `As`` stores numbers of state that belong to space `A`
-        spectrum = Matrix{Float64}(undef, size(bh0.H, 1), length(As))
-        h = zeros(length(As), length(As)) # reduced matrix of the subspace of interest
+        As = findall(s -> s[1] == subspace, bh0.space_of_state) # `As` stores numbers of state that belong to space `subspace`
+        spectrum = Matrix{Float64}(undef, length(As), length(Us))
         Threads.@threads for iU in eachindex(Us)
+            h = zeros(length(As), length(As)) # reduced matrix of the subspace of interest
             bh = BoseHamiltonian(bh0.lattice, J, Us[iU], f, ω, r; type, order);
             for i in eachindex(As), j in i:length(As)
                 h[j, i] = bh.H[As[j], As[i]]
