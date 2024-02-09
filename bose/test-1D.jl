@@ -1,4 +1,5 @@
-includet("hamiltonian-1D.jl")
+includet("FloquetSystems.jl")
+using .FloquetSystems
 
 using LinearAlgebra, BenchmarkTools, SpecialFunctions
 using Plots, LaTeXStrings
@@ -63,16 +64,16 @@ yaxis!((-2, 2))
 yaxis!((-10.5, 10.5))
 
 # Exact quasienergy spectrum
-lattice = Lattice(;dims=(1, 6), isperiodic=true)
+lattice = Lattice(;dims=(1, 5), isperiodic=true)
 lattice = Lattice(;dims=(2, 3), isperiodic=true)
 J = 1 # setting to 1 so that `U` is measured in units of `J`
-ω = 20
+ω = 10
 U = 1
-f = 2
+f = 5
 bh = BoseHamiltonian(lattice, J, U, f, ω)
 
 Us = range(0, ω, 80)
-Us = range(19, 21, 300)
+Us = range(6, 8, 300)
 @time ε = quasienergy_dense(bh, Us, parallelise=true);
 # e = copy(ε)
 sum(abs.(e .- ε))
@@ -118,14 +119,14 @@ end
 # degenerate theory
 
 J = 1 # setting to 1 so that `U` is measured in units of `J`
-f = 2
-ω = 20
+f = 5
+ω = 10
 
 r = 2//3
 
 U₀ = float(ω) * r
 
-lattice = Lattice(;dims=(1, 6), isperiodic=true)
+lattice = Lattice(;dims=(1, 5), isperiodic=true)
 lattice = Lattice(;dims=(2, 3), isperiodic=true)
 @time bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, type=:dpt, order=1);
 scatter(bh.H[1,:], markersize=1, markerstrokewidth=0)
@@ -150,7 +151,7 @@ nU = 300
 Us = range(U₀-1, U₀+1, nU)
 Us = range(6.01, 7.99, nU)
 
-spectrum = scan_U(bh, r, Us; type=:dpt, order=3)
+spectrum = scan_U(bh, r, Us; type=:dpt_quick, order=3)
 
 gr()
 plotlyjs()
@@ -159,7 +160,7 @@ spectrum[spectrum .< 0] .+= ω
 figD2 = scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
 scatter!(Us, (spectrum .- ω)', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
 ylims!(-5, 5)
-ylims!(0, 3)
+ylims!(-2, 2)
 ylims!(figD2, (-0.6, -0.3))
 ylims!(figD2, (-ω/2, ω/2))
 xlims!(6, 8)
