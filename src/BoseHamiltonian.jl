@@ -35,7 +35,7 @@ function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, 
             end
         end
     end
-    space_of_state::Vector{Tuple{Int,Int}} = if r == 0
+    space_of_state = if r == 0
         Vector{Tuple{Int,Int}}()
     else
         map(E₀) do E
@@ -568,7 +568,13 @@ function scan_U(bh0::BoseHamiltonian, r::Rational, Us::AbstractVector{<:Real}, s
             ProgressMeter.next!(progbar)
         end
     elseif type == :dpt_quick
-        As = findall(s -> s[1] == subspace, bh0.space_of_state) # `As` stores numbers of state that belong to space `subspace`
+        # construct `space_of_state` because `bh0` does not necessarily contain it
+        space_of_state = map(bh0.E₀) do E
+            a = floor(Int, E * r)
+            A = E % denominator(r)
+            return (A, a)
+        end
+        As = findall(s -> s[1] == subspace, space_of_state) # `As` stores numbers of state that belong to space `subspace`
         spectrum = Matrix{Float64}(undef, length(As), length(Us))
         Threads.@threads for iU in eachindex(Us)
             h = zeros(length(As), length(As)) # reduced matrix of the subspace of interest

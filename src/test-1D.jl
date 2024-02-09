@@ -1,5 +1,4 @@
-includet("FloquetSystems.jl")
-using .FloquetSystems
+using FloquetSystems
 
 using LinearAlgebra, BenchmarkTools, SpecialFunctions
 using Plots, LaTeXStrings
@@ -67,9 +66,9 @@ yaxis!((-10.5, 10.5))
 lattice = Lattice(;dims=(1, 5), isperiodic=true)
 lattice = Lattice(;dims=(2, 3), isperiodic=true)
 J = 1 # setting to 1 so that `U` is measured in units of `J`
-ω = 10
+ω = 20
 U = 1
-f = 5
+f = 2
 bh = BoseHamiltonian(lattice, J, U, f, ω)
 
 Us = range(0, ω, 80)
@@ -160,7 +159,7 @@ spectrum[spectrum .< 0] .+= ω
 figD2 = scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
 scatter!(Us, (spectrum .- ω)', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=1, legend=false, ticks=:native, widen=false);
 ylims!(-5, 5)
-ylims!(-2, 2)
+ylims!(0, 3)
 ylims!(figD2, (-0.6, -0.3))
 ylims!(figD2, (-ω/2, ω/2))
 xlims!(6, 8)
