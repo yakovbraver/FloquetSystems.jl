@@ -598,8 +598,8 @@ end
 "Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`."
 function quasienergy(bh::BoseHamiltonian, Us::AbstractVector{<:Real})
     H_rows, H_cols, H_vals = Int[], Int[], ComplexF64[]
-    H_sign = Int[] # stores the sign of the tunneling phase for each off-diagonal element
-    (;J, f, ω) = bh
+    H_sign = Float64[] # stores the sign of the tunneling phase for each off-diagonal element, multiplied by `f`
+    (;J, f, ω, E₀) = bh
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
 
     # Construct the Hamiltonian with `f` = 0 and `U` = 1
@@ -615,49 +615,43 @@ function quasienergy(bh::BoseHamiltonian, Us::AbstractVector{<:Real})
                     bra[i] += 1
                     row = index_of_state[bra]
                     push_state!(H_rows, H_cols, H_vals, val; row, col=index)
-                    push!(H_sign, s)
+                    push!(H_sign, s*f)
                 end
             end
         end
     end
-    # diagonal elements 𝑛ᵢ(𝑛ᵢ - 1)
-    U = 1
-    for (state, index) in index_of_state
-        val = 0.0
-        for i = 1:ncells
-            if (state[i] > 1)
-                val += -im * U/2 * state[i] * (state[i] - 1) # multiply by `-im` as on the rhs of ∂ₜ𝜓 = -i𝐻𝜓
-            end
-        end
-        push_state!(H_rows, H_cols, H_vals, val; row=index, col=index)
-    end
 
     nstates = size(bh.H, 1)
+
+    # append placeholders for storing diagonal elements
+    append!(H_vals, zeros(Float64, nstates))
+    append!(H_rows, 1:nstates)
+    append!(H_cols, 1:nstates)
+
     n_U = length(Us)
     ε = Matrix{Float64}(undef, nstates, n_U)
     C₀ = Matrix{ComplexF64}(I, nstates, nstates)
     
     T = 2π / ω
     tspan = (0.0, T)
-    H_vals_U = copy(H_vals) # `H_vals_U` will be mutated depending on `U`
+    H_vals_buff = similar(H_vals)
     @showprogress for (i, U) in enumerate(Us)
-        H_vals_U[end-nstates+1:end] .= U .* H_vals[end-nstates+1:end] # update last `nstates` values in `H_vals_U` -- these are diagonal elements of the Hamiltonian
-        params = (H_rows, H_cols, H_vals_U, H_sign, f, ω, nstates)
-        H_op = DiffEqArrayOperator(sparse(H_rows, H_cols, H_vals_U), update_func=update_func!)
-        prob = ODEProblem(H_op, C₀, tspan, params, save_everystep=false)
-        sol = solve(prob, MagnusGauss4(), dt=T/100)
+        H_vals_buff[end-nstates+1:end] .= U .* (-im .* E₀) # update last `nstates` values in `H_vals_U` -- these are diagonal elements of the Hamiltonian
+        params = (H_rows, H_cols, H_vals_buff, H_vals, H_sign, ω, nstates)
+        prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
+        sol = solve(prob, Tsit5())
         ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
     end
 
     return ε
 end
 
-"Update rhs operator (used for monodromy matrix calculation)."
-function update_func!(H, u, p, t)
-    H_rows, H_cols, H_vals, H_sign, f, ω, nstates = p
-    vals = copy(H_vals)
-    vals[1:end-nstates] .*= cis.(f .* sin(ω.*t) .* H_sign) # update off diagonal elements of the Hamiltonian
-    H .= sparse(H_rows, H_cols, vals)
+"Schrödinger equation used for monodromy matrix calculation."
+function schrodinger!(du, u, p, t)
+    H_rows, H_cols, H_vals_buff, H_vals_base, H_sign, ω, nstates = p
+    H_vals_buff[1:end-nstates] .= @view(H_vals_base[1:end-nstates]) .* cis.(sin(ω.*t) .* H_sign) # update off diagonal elements of the Hamiltonian
+    H = sparse(H_rows, H_cols, H_vals_buff)
+    mul!(du, H, u)
 end
 
 """
@@ -724,7 +718,7 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; para
             H_buff = zeros(ComplexF64, nstates, nstates)
             H_buff[diagind(H_buff)] .= U .* (-im .* E₀)
             params = (H_buff, H, H_sign, ω, f)
-            prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
+            prob = ODEProblem(schrodinger_dense!, C₀, tspan, params, save_everystep=false)
             sol = solve(prob, Tsit5())
             ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
         end
@@ -733,8 +727,8 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; para
     return ε
 end
 
-"Update rhs operator (used for monodromy matrix calculation)."
-function schrodinger!(du, u, params, t)
+"Dense version of the Schrödinger equation used for monodromy matrix calculation."
+function schrodinger_dense!(du, u, params, t)
     H_buff, H_base, H_sign, ω, f = params
     p = cis(f * sin(ω*t)); n = cis(-f * sin(ω*t));
     for (i, s) in enumerate(H_sign)
