@@ -705,14 +705,12 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; para
 
         @floop for (i, U) in enumerate(Us)
             @init begin
-                H_base = copy(H) # diagonal of `H_base` will be mutated depending on `U`
-                # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving,
+                # diagonal of `H_buff` will remain equal to -𝑖𝑈 times the diagonal of `H` throughout diffeq solving,
                 # while off-diagnoal elemnts will be mutated at each step
                 H_buff = zeros(ComplexF64, nstates, nstates)
             end
-            H_base[diagind(H_base)] .= U .* (-im .* E₀)
-            H_buff[diagind(H_base)] .= diag(H_base)
-            params = (H_buff, H_base, H_sign, ω, f)
+            H_buff[diagind(H_buff)] .= U .* (-im .* E₀)
+            params = (H_buff, H, H_sign, ω, f)
             prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
             sol = solve(prob)
             ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
@@ -723,9 +721,8 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; para
         BLAS.set_num_threads(n_blas) # restore original number of threads
     else
         @showprogress for (i, U) in enumerate(Us)
-            H[diagind(H)] .= U .* (-im .* E₀)
             H_buff = zeros(ComplexF64, nstates, nstates)
-            H_buff[diagind(H)] .= diag(H)
+            H_buff[diagind(H_buff)] .= U .* (-im .* E₀)
             params = (H_buff, H, H_sign, ω, f)
             prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
             sol = solve(prob)
