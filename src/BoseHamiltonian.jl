@@ -20,12 +20,12 @@ mutable struct BoseHamiltonian
     type::Symbol # `:dpt`, `:dpt_quick`, or anything else for non-dpt
     order::Int
     space_of_state::Vector{Tuple{Int,Int}}    # space_of_state[i] stores the subspace number (𝐴, 𝑎) of i'th state, with 𝐴 = 0 assigned to all nondegenerate space
-    E₀::Vector{Int} # zeroth-order spectrum, in units of 𝑈
+    E₀::Vector{Int}    # zeroth-order spectrum, in units of 𝑈
     H::Matrix{Float64} # the Hamiltonian matrix
 end
 
-"Construct a `BoseHamiltonian` object defined on `lattice`."
-function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, r::Rational=0//1; order::Integer=1, type::Symbol=:basic)
+"Construct a `BoseHamiltonian` object defined on `lattice`. `ωₗ` is the lower bound of the first Floquet zone."
+function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, r::Rational=0//1, ωₗ::Real=0; order::Integer=1, type::Symbol=:basic)
     nstates = length(lattice.basis_states)
     E₀ = zeros(Int, length(lattice.basis_states))
     for (index, state) in enumerate(lattice.basis_states)
@@ -39,7 +39,7 @@ function BoseHamiltonian(lattice::Lattice, J::Real, U::Real, f::Real, ω::Real, 
         Vector{Tuple{Int,Int}}()
     else
         map(E₀) do E
-            a = floor(Int, E * r)
+            a = (E*r*ω - ωₗ) ÷ ω
             A = E % denominator(r)
             return (A, a)
         end
@@ -549,11 +549,12 @@ function get_R2!(R, U, ω, f, ΔE1, ΔE2, d1, d2, J_indices, J_args, skipzero)
     return R[key]
 end
 
-"""Calculate and return the spectrum for the values of 𝑈 in `Us`, using degenerate theory: `type` should be `:dpt` or `:dpt_quick`.
+"""
+Calculate and return the spectrum for the values of 𝑈 in `Us`, using degenerate theory: `type` should be `:dpt` or `:dpt_quick`.
 If `type=:dpt_quick`, then `subspace` must contain the subspace number (as in `bh.space_of_state[:][1]`) of interest.
 `bh` is used as a parameter holder, but `bh.U`, `bh.type`, and `bh.order` do not matter --- function arguments are used instead.
 """
-function scan_U(bh0::BoseHamiltonian, r::Rational, Us::AbstractVector{<:Real}, subspace::Integer=0; type::Symbol, order::Integer)
+function scan_U(bh0::BoseHamiltonian, r::Rational, ωₗ::Real, Us::AbstractVector{<:Real}, subspace::Integer=0; type::Symbol, order::Integer)
     (;J, f, ω) = bh0
 
     n_blas = BLAS.get_num_threads() # save original number of threads to restore later
@@ -563,14 +564,14 @@ function scan_U(bh0::BoseHamiltonian, r::Rational, Us::AbstractVector{<:Real}, s
     if type == :dpt
         spectrum = Matrix{Float64}(undef, size(bh0.H, 1), length(Us))
         Threads.@threads for iU in eachindex(Us)
-            bh = BoseHamiltonian(bh0.lattice, J, Us[iU], f, ω, r; type, order);
+            bh = BoseHamiltonian(bh0.lattice, J, Us[iU], f, ω, r, ωₗ; type, order);
             spectrum[:, iU] = eigvals(Symmetric(bh.H))
             ProgressMeter.next!(progbar)
         end
     elseif type == :dpt_quick
         # construct `space_of_state` because `bh0` does not necessarily contain it
         space_of_state = map(bh0.E₀) do E
-            a = floor(Int, E * r)
+            a = (E*r*ω - ωₗ) ÷ ω
             A = E % denominator(r)
             return (A, a)
         end
@@ -625,7 +626,7 @@ function quasienergy(bh::BoseHamiltonian, Us::AbstractVector{<:Real})
         val = 0.0
         for i = 1:ncells
             if (state[i] > 1)
-                val += -im * U/2 * state[i] * (state[i] - 1) # multiply by `-im` as in the rhs of ∂ₜ𝜓 = -i𝐻𝜓
+                val += -im * U/2 * state[i] * (state[i] - 1) # multiply by `-im` as on the rhs of ∂ₜ𝜓 = -i𝐻𝜓
             end
         end
         push_state!(H_rows, H_cols, H_vals, val; row=index, col=index)
