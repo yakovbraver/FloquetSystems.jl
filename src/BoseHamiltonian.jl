@@ -1,4 +1,4 @@
-using DifferentialEquations, SparseArrays
+using OrdinaryDiffEq, SparseArrays
 using SpecialFunctions: besselj0, besselj
 using LinearAlgebra: diagind, diag, eigvals, mul!, Symmetric, I, BLAS
 using ProgressMeter: @showprogress
@@ -712,7 +712,7 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; para
             H_buff[diagind(H_buff)] .= U .* (-im .* E₀)
             params = (H_buff, H, H_sign, ω, f)
             prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
-            sol = solve(prob)
+            sol = solve(prob, Tsit5())
             ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
 
             # ProgressMeter.next!(progbar)
@@ -725,7 +725,7 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; para
             H_buff[diagind(H_buff)] .= U .* (-im .* E₀)
             params = (H_buff, H, H_sign, ω, f)
             prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
-            sol = solve(prob)
+            sol = solve(prob, Tsit5())
             ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
         end
     end
