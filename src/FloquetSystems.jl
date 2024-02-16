@@ -7,6 +7,7 @@ export Lattice,
     BoseHamiltonian,
     update_params!,
     scan_U,
+    quasienergy,
     quasienergy_dense
 
 end

@@ -71,16 +71,16 @@ U = 1
 f = 2
 bh = BoseHamiltonian(lattice, J, U, f, ω)
 
-Us = range(0, ω, 48)
-Us = range(6, 8, 300)
-@time ε = quasienergy_dense(bh, Us, parallelise=true);
+Us = range(0, ω, 80)
+Us = range(12, 15, 300)
+@time ε = quasienergy(bh, Us);
 
 gr()
 fig = scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
 scatter!(Us, ε' .+ ω, markersize=0.5, markerstrokewidth=0, c=colour);
 scatter!(Us, ε' .- ω, markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native);
 ylims!(-ω/2, ω/2)
-ylims!(-2, 2);
+ylims!(-2, 2)
 vline!([U₀], c=:red)
 title!(fig, L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact")
 savefig("f$(f)_w$(ω)_2d3_$(lattice.dims[1])x$(lattice.dims[2])-exact.png")
@@ -125,7 +125,7 @@ r = 2//3
 ωₗ = 0
 U₀ = float(ω) * r
 
-lattice = Lattice(;dims=(2, 4), isperiodic=true)
+lattice = Lattice(;dims=(1, 5), isperiodic=true)
 @time bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, ωₗ, type=:dpt, order=3);
 scatter!(1:length(lattice.basis_states), i -> bh.space_of_state[i][2], markersize=1, markerstrokewidth=0, legend=false)
 scatter!(abs.(bh.H[1, :]), markersize=1, markerstrokewidth=0, legend=false)
@@ -147,8 +147,6 @@ M[diagind(M)] .= 0;
 f2 = heatmap(abs.(M), yaxis=:flip, c=:viridis)
 heatmap(abs.(bh.H), yaxis=:flip, c=:viridis)
 plot(bh.H[diagind(bh.H)])
-
-@time bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, type=:dpt, order=1);
 
 nU = 16
 Us = range(U₀-1, U₀+1, nU)

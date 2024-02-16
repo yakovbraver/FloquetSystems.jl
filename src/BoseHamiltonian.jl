@@ -4,6 +4,7 @@ using LinearAlgebra: diagind, diag, eigvals, mul!, Symmetric, I, BLAS
 using ProgressMeter: @showprogress
 import ProgressMeter
 using FLoops: @floop, @init
+import FLoops
 
 import Base.show
 
@@ -595,8 +596,13 @@ function scan_U(bh0::BoseHamiltonian, r::Rational, ωₗ::Real, Us::AbstractVect
     return spectrum
 end
 
-"Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`."
-function quasienergy(bh::BoseHamiltonian, Us::AbstractVector{<:Real})
+"""
+Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`.
+By default, loop over `Us` is parallelised using all threads that julia was launched with: `nthreads=Threads.nthreads()`.
+Setting `nthreads=1` makes the loop over `Us` sequential, but the diffeq solving uses BLAS threading.
+For `nthreads > 1`, BLAS threading is turned off, but is restored to the original state upon finishing the calculation.
+"""
+function quasienergy(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; nthreads::Int=Threads.nthreads())
     H_rows, H_cols, H_vals = Int[], Int[], ComplexF64[]
     H_sign = Float64[] # stores the sign of the tunneling phase for each off-diagonal element, multiplied by `f`
     (;J, f, ω, E₀) = bh
@@ -634,14 +640,31 @@ function quasienergy(bh::BoseHamiltonian, Us::AbstractVector{<:Real})
     
     T = 2π / ω
     tspan = (0.0, T)
-    H_vals_buff = similar(H_vals)
-    @showprogress for (i, U) in enumerate(Us)
+
+    if nthreads > 1
+        n_blas = BLAS.get_num_threads() # save original number of threads to restore later
+        BLAS.set_num_threads(1)
+    end
+    executor = FLoops.ThreadedEx(basesize=length(Us)÷nthreads)
+
+    # progbar = ProgressMeter.Progress(length(Us)) # makes cores stop periodically when using floop
+
+    @floop executor for (i, U) in enumerate(Us)
+        @init begin
+            # diagonal of `H_buff` will remain equal to -𝑖𝑈 times the diagonal of `H` throughout diffeq solving,
+            # while off-diagnoal elemnts will be mutated at each step
+            H_vals_buff = similar(H_vals)
+        end
         H_vals_buff[end-nstates+1:end] .= U .* (-im .* E₀) # update last `nstates` values in `H_vals_U` -- these are diagonal elements of the Hamiltonian
         params = (H_rows, H_cols, H_vals_buff, H_vals, H_sign, ω, nstates)
         prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
         sol = solve(prob, Tsit5())
         ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
+
+        # ProgressMeter.next!(progbar)
     end
+    # ProgressMeter.finish!(progbar)
+    nthreads > 1 && BLAS.set_num_threads(n_blas) # restore original number of threads
 
     return ε
 end
@@ -705,7 +728,7 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; para
             end
             H_buff[diagind(H_buff)] .= U .* (-im .* E₀)
             params = (H_buff, H, H_sign, ω, f)
-            prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
+            prob = ODEProblem(schrodinger_dense!, C₀, tspan, params, save_everystep=false)
             sol = solve(prob, Tsit5())
             ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
 
@@ -714,8 +737,8 @@ function quasienergy_dense(bh::BoseHamiltonian, Us::AbstractVector{<:Real}; para
         # ProgressMeter.finish!(progbar)
         BLAS.set_num_threads(n_blas) # restore original number of threads
     else
+        H_buff = zeros(ComplexF64, nstates, nstates)
         @showprogress for (i, U) in enumerate(Us)
-            H_buff = zeros(ComplexF64, nstates, nstates)
             H_buff[diagind(H_buff)] .= U .* (-im .* E₀)
             params = (H_buff, H, H_sign, ω, f)
             prob = ODEProblem(schrodinger_dense!, C₀, tspan, params, save_everystep=false)
