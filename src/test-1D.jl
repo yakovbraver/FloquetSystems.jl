@@ -25,7 +25,7 @@ end
 nbozons = 5; ncells = 5
 lattice = Lattice(;dims=(1, ncells), isperiodic=true)
 nstates = length(lattice.basis_states)
-J = 1 # setting to 1 so that `U` is measured in units of `J`
+J = 1.0f0 # setting to 1 so that `U` is measured in units of `J`
 U = 1#sqrt(1.01)
 f = 2
 ω = 20
@@ -42,17 +42,16 @@ M[diagind(M)] .= 0
 heatmap(M, yaxis=:flip, c=:coolwarm)
 heatmap(bh.H, yaxis=:flip, c=:coolwarm)
 
-nU = 1000
-spectrum = Matrix{Float64}(undef, length(lattice.basis_states), nU)
-Us = range(0, 2ω, nU) #.* √1.01
-bh = BoseHamiltonian(lattice, J, U, f, ω, order=2, type=:diverging)
+nU = 500
+spectrum = Matrix{typeof(J)}(undef, length(lattice.basis_states), nU)
+Us = range(0, ω, nU) #.* √1.01
+bh = BoseHamiltonian(lattice, J, U, f, ω, order=2, type=:basic)
 @time for (iU, U) in enumerate(Us)
     update_params!(bh; U)
-    spectrum[:, iU] = eigvals(Symmetric(Matrix(bh.H)))
+    spectrum[:, iU] = eigvals(Symmetric(bh.H))
 end
 
 gr()
-plotlyjs()
 spectrum .%= ω
 spectrum[spectrum .< 0] .+= ω
 scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native);
@@ -65,7 +64,7 @@ yaxis!((-10.5, 10.5))
 
 # Exact quasienergy spectrum
 lattice = Lattice(;dims=(2, 3), isperiodic=true)
-J = 1 # setting to 1 so that `U` is measured in units of `J`
+J = 1.0f0 # setting to 1 so that `U` is measured in units of `J`
 ω = 20
 U = 1
 f = 2
@@ -116,7 +115,7 @@ end
 
 # degenerate theory
 
-J = 1 # setting to 1 so that `U` is measured in units of `J`
+J = 1.0f0 # setting to 1 so that `U` is measured in units of `J`
 f = 2
 ω = 20
 
@@ -125,7 +124,7 @@ r = 2//3
 ωₗ = 0
 U₀ = float(ω) * r
 
-lattice = Lattice(;dims=(1, 5), isperiodic=true)
+lattice = Lattice(;dims=(2, 3), isperiodic=true)
 @time bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, ωₗ, type=:dpt, order=3);
 scatter!(1:length(lattice.basis_states), i -> bh.space_of_state[i][2], markersize=1, markerstrokewidth=0, legend=false)
 scatter!(abs.(bh.H[1, :]), markersize=1, markerstrokewidth=0, legend=false)
@@ -148,7 +147,7 @@ f2 = heatmap(abs.(M), yaxis=:flip, c=:viridis)
 heatmap(abs.(bh.H), yaxis=:flip, c=:viridis)
 plot(bh.H[diagind(bh.H)])
 
-nU = 16
+nU = 80
 Us = range(U₀-1, U₀+1, nU)
 Us = range(1.57, 1.71, nU)
 
