@@ -44,7 +44,7 @@ function BoseHamiltonian(lattice::Lattice, J::Float, U::Real, f::Real, ω::Real,
         Vector{Tuple{Int,Int}}()
     else
         map(E₀) do E
-            a = (E*r*ω - ωₗ) ÷ ω
+            a = (E*r*ω - ωₗ) ÷ ω |> Int
             A = E % denominator(r)
             return (A, a)
         end
@@ -579,7 +579,7 @@ function scan_U(bh0::BoseHamiltonian{Float}, r::Rational, ωₗ::Real, Us::Abstr
     elseif type == :dpt_quick
         # construct `space_of_state` because `bh0` does not necessarily contain it
         space_of_state = map(bh0.E₀) do E
-            a = (E*r*ω - ωₗ) ÷ ω
+            a = (E*r*ω - ωₗ) ÷ ω |> Int
             A = E % denominator(r)
             return (A, a)
         end
