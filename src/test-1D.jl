@@ -72,7 +72,8 @@ bh = BoseHamiltonian(lattice, J, U, f, ω)
 
 Us = range(0, ω, 80)
 Us = range(12, 15, 300)
-@time ε = quasienergy(bh, Us);
+ε = quasienergy(bh, Us, nthreads=8);
+ε = quasienergy_dense(bh, Us, nthreads=1);
 
 gr()
 fig = scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);

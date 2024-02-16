@@ -656,7 +656,7 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
     end
     executor = FLoops.ThreadedEx(basesize=length(Us)÷nthreads)
 
-    # progbar = ProgressMeter.Progress(length(Us)) # makes cores stop periodically when using floop
+    progbar = ProgressMeter.Progress(length(Us)) # makes cores stop periodically when using floop
 
     @floop executor for (i, U) in enumerate(Us)
         @init begin
@@ -670,9 +670,9 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
         sol = solve(prob, Tsit5())
         ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
 
-        # ProgressMeter.next!(progbar)
+        ProgressMeter.next!(progbar)
     end
-    # ProgressMeter.finish!(progbar)
+    ProgressMeter.finish!(progbar)
     nthreads > 1 && BLAS.set_num_threads(n_blas) # restore original number of threads
 
     return ε
@@ -689,8 +689,11 @@ end
 """
 Calculate quasienergy spectrum via monodromy matrix for each value of 𝑈 in `Us`.
 `bh` is used as a parameter holder, but `bh.U`, `bh.type`, and `bh.order` do not matter.
+By default, loop over `Us` is parallelised using all threads that julia was launched with: `nthreads=Threads.nthreads()`.
+Setting `nthreads=1` makes the loop over `Us` sequential, but the diffeq solving uses BLAS threading.
+For `nthreads > 1`, BLAS threading is turned off, but is restored to the original state upon finishing the calculation.
 """
-function quasienergy_dense(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; parallelise=true) where {Float<:AbstractFloat}
+function quasienergy_dense(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nthreads::Int=Threads.nthreads()) where {Float<:AbstractFloat}
     (;J, f, ω, E₀) = bh
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
     Cmplx = (Float == Float32 ? ComplexF32 : ComplexF64)
@@ -725,38 +728,30 @@ function quasienergy_dense(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real
     T = 2π / ω
     tspan = (0.0, T)
 
-    if parallelise
+    if nthreads > 1
         n_blas = BLAS.get_num_threads() # save original number of threads to restore later
         BLAS.set_num_threads(1)
-
-        # progbar = ProgressMeter.Progress(length(Us)) # makes cores stop periodically when using floop
-
-        @floop for (i, U) in enumerate(Us)
-            @init begin
-                # diagonal of `H_buff` will remain equal to -𝑖𝑈 times the diagonal of `H` throughout diffeq solving,
-                # while off-diagnoal elemnts will be mutated at each step
-                H_buff = zeros(Cmplx, nstates, nstates)
-            end
-            H_buff[diagind(H_buff)] .= U .* (-im .* E₀)
-            params = (H_buff, H, H_sign, ω, f)
-            prob = ODEProblem(schrodinger_dense!, C₀, tspan, params, save_everystep=false)
-            sol = solve(prob, Tsit5())
-            ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
-
-            # ProgressMeter.next!(progbar)
-        end
-        # ProgressMeter.finish!(progbar)
-        BLAS.set_num_threads(n_blas) # restore original number of threads
-    else
-        H_buff = zeros(Cmplx, nstates, nstates)
-        @showprogress for (i, U) in enumerate(Us)
-            H_buff[diagind(H_buff)] .= U .* (-im .* E₀)
-            params = (H_buff, H, H_sign, ω, f)
-            prob = ODEProblem(schrodinger_dense!, C₀, tspan, params, save_everystep=false)
-            sol = solve(prob, Tsit5())
-            ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
-        end
     end
+    executor = FLoops.ThreadedEx(basesize=length(Us)÷nthreads)
+
+    progbar = ProgressMeter.Progress(length(Us)) #  makes cores stop periodically when using floop
+
+    @floop executor for (i, U) in enumerate(Us)
+        @init begin
+            # diagonal of `H_buff` will remain equal to -𝑖𝑈 times the diagonal of `H` throughout diffeq solving,
+            # while off-diagnoal elemnts will be mutated at each step
+            H_buff = zeros(Cmplx, nstates, nstates)
+        end
+        H_buff[diagind(H_buff)] .= U .* (-im .* E₀)
+        params = (H_buff, H, H_sign, ω, f)
+        prob = ODEProblem(schrodinger_dense!, C₀, tspan, params, save_everystep=false)
+        sol = solve(prob, Tsit5())
+        ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
+
+        ProgressMeter.next!(progbar)
+    end
+    ProgressMeter.finish!(progbar)
+    nthreads > 1 && BLAS.set_num_threads(n_blas) # restore original number of threads
 
     return ε
 end
