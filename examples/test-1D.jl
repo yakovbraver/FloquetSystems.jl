@@ -5,7 +5,7 @@ using Plots, LaTeXStrings
 plotlyjs()
 theme(:dark, size=(800, 600))
 theme(:default, size=(800, 600))
-colour = 1
+colour = :black
 
 """
 Plot occupations of each lattice cell in a state `state`, which is a superposition of the basis states of `bh`.
@@ -63,17 +63,23 @@ yaxis!((-2, 2))
 yaxis!((-10.5, 10.5))
 
 # Exact quasienergy spectrum
-lattice = Lattice(;dims=(2, 3), isperiodic=true)
+lattice = Lattice(;dims=(1, 6), isperiodic=true)
 J = 1.0f0 # setting to 1 so that `U` is measured in units of `J`
 ω = 20
 U = 1
 f = 2
 bh = BoseHamiltonian(lattice, J, U, f, ω)
 
-Us = range(0, ω, 80)
-Us = range(12, 15, 300)
-ε = quasienergy(bh, Us, nthreads=8);
-ε = quasienergy_dense(bh, Us, nthreads=1);
+Us = range(13, 13.6, 8)
+Us = range(12, 15, 10)
+@time ε, sp = quasienergy(bh, Us, nthreads=8, order=true, outdir="muhmuh");
+
+# isolating levels of interest
+n_isol = 1
+E = Matrix{typeof(J)}(undef, n_isol, length(Us))
+for i in eachindex(Us)
+    E[:, i] = ε[sp[1:n_isol, i], i]
+end
 
 gr()
 fig = scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
@@ -97,16 +103,16 @@ scatter!(spectrum[:, u], xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=1, m
 sp2 = copy(spectrum)
 
 using DelimitedFiles
-ε_old = readdlm("calcs/f2_w20_U12-15_2x3-exact.txt")
+ε_old = readdlm("calcs/f2_w20_U12-15_2x4-exact.txt")
 fig = scatter(ε_old[1, :], ε_old[2:end, :]', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", exact", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
 scatter!(ε_old[1, :], ε_old[2:end, :]' .+ ω, markersize=0.5, markerstrokewidth=0, c=colour);
 scatter!(ε_old[1, :], ε_old[2:end, :]' .- ω, markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native);
 vline!([U₀], c=:red);
-ylims!(0, 3);
-title!(fig, L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact")
+ylims!(-3, 3);
+title!(fig, L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact");
 xlims!(12.33, 14.33);
 xlims!(6, 8)
-ylims!(-ω/2, ω/2)
+ylims!(-ω/2, ω/2);
 
 savefig("f$(f)_w$(ω)_2d3_$(lattice.dims[1])x$(lattice.dims[2])-exact.png")
 

@@ -1,6 +1,6 @@
 using OrdinaryDiffEq, SparseArrays, DelimitedFiles
 using SpecialFunctions: besselj0, besselj
-using LinearAlgebra: diagind, diag, eigvals, mul!, Symmetric, I, BLAS
+using LinearAlgebra: diagind, diag, eigvals, mul!, Symmetric, I, BLAS, eigen
 using ProgressMeter: @showprogress
 import ProgressMeter
 using FLoops: @floop, @init
@@ -612,8 +612,11 @@ For `nthreads > 1`, BLAS threading is turned off, but is restored to the origina
 If `outdir` is passed, a new directory will be created (if it does not exist) where the quasienergy spectrum at each `i`th value of `Us`
 will be output immediately after calculation. The files are named as "<i>.txt"; the first value in the files is `Us[i]`, and the following
 are the quasienergies.
+
+If `order=true`, the second returned argument, which is the permutation matrix, will be populated.
+This allows one to isolate the quasienergies of states having the largest overlap with the ground state.
 """
-function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nthreads::Int=Threads.nthreads(), outdir::String="") where {Float<:AbstractFloat}
+function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nthreads::Int=Threads.nthreads(), outdir::String="", order::Bool=true) where {Float<:AbstractFloat}
     (;J, f, ω, E₀) = bh
     Cmplx = (Float == Float32 ? ComplexF32 : ComplexF64)
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
@@ -648,6 +651,7 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
 
     n_U = length(Us)
     ε = Matrix{Float}(undef, nstates, n_U)
+    sp = Matrix{Int}(undef, nstates, n_U) # sorting matrix
     C₀ = Matrix{Cmplx}(I, nstates, nstates)
     
     T = 2π / ω
@@ -674,10 +678,22 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
         params = (H_rows, H_cols, H_vals_buff, H_vals, H_sign, ω, nstates)
         prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
         sol = solve(prob, Tsit5())
-        ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
+
+        if order # find and save only `nsaves` quasienergies having the largest overlap with the unperturbed ground state
+            e, v = eigen(sol[end])
+            sp[:, i] = sortperm(abs2.(@view(v[1, :])), rev=true)
+            ε[:, i] = -ω .* angle.(e) ./ 2π
+        else
+            ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
+        end
+
         if outdir != ""
             open(joinpath(outdir, "$(i).txt"), "w") do io
-                writedlm(io, vcat([U], ε[:, i])) 
+                if order
+                    writedlm(io, vcat([U U], [ε[:, i] sp[:, i]]))
+                else
+                    writedlm(io, vcat([U], ε[:, i]))
+                end
             end
         end
         # ProgressMeter.next!(progbar)
@@ -685,7 +701,7 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
     # ProgressMeter.finish!(progbar)
     nthreads > 1 && BLAS.set_num_threads(n_blas) # restore original number of threads
 
-    return ε
+    return ε, sp
 end
 
 "Schrödinger equation used for monodromy matrix calculation."
