@@ -1,4 +1,4 @@
-using OrdinaryDiffEq, SparseArrays
+using OrdinaryDiffEq, SparseArrays, DelimitedFiles
 using SpecialFunctions: besselj0, besselj
 using LinearAlgebra: diagind, diag, eigvals, mul!, Symmetric, I, BLAS
 using ProgressMeter: @showprogress
@@ -608,8 +608,12 @@ Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of �
 By default, loop over `Us` is parallelised using all threads that julia was launched with: `nthreads=Threads.nthreads()`.
 Setting `nthreads=1` makes the loop over `Us` sequential, but the diffeq solving uses BLAS threading.
 For `nthreads > 1`, BLAS threading is turned off, but is restored to the original state upon finishing the calculation.
+
+If `outdir` is passed, a new directory will be created (if it does not exist) where the quasienergy spectrum at each `i`th value of `Us`
+will be output immediately after calculation. The files are named as "<i>.txt"; the first value in the files is `Us[i]`, and the following
+are the quasienergies.
 """
-function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nthreads::Int=Threads.nthreads()) where {Float<:AbstractFloat}
+function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nthreads::Int=Threads.nthreads(), outdir::String="") where {Float<:AbstractFloat}
     (;J, f, ω, E₀) = bh
     Cmplx = (Float == Float32 ? ComplexF32 : ComplexF64)
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
@@ -617,8 +621,7 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
     H_rows, H_cols, H_vals = Int[], Int[], Cmplx[]
     H_sign = Float[] # stores the sign of the tunneling phase for each off-diagonal element, multiplied by `f`
 
-    # Construct the Hamiltonian with `f` = 0 and `U` = 1
-    # off-diagonal elements 𝑎†ᵢ 𝑎ⱼ
+    # Fill the off-diagonal elemnts of the Hamiltonian for `f` = 0
     for (state, index) in index_of_state
         for i = 1:ncells # iterate over the terms of the Hamiltonian
             for (j, s) in neis_of_cell[i]
@@ -656,7 +659,10 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
     end
     executor = FLoops.ThreadedEx(basesize=length(Us)÷nthreads)
 
-    progbar = ProgressMeter.Progress(length(Us)) # makes cores stop periodically when using floop
+    # progbar = ProgressMeter.Progress(length(Us); enabled=showprogress) # slows down conputation up to 1.5 times!
+
+    # if `outdir` is given but does not exist, then create it
+    (outdir != "" && !isdir(outdir)) && mkdir(outdir)
 
     @floop executor for (i, U) in enumerate(Us)
         @init begin
@@ -669,10 +675,14 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
         prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
         sol = solve(prob, Tsit5())
         ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
-
-        ProgressMeter.next!(progbar)
+        if outdir != ""
+            open(joinpath(outdir, "$(i).txt"), "w") do io
+                writedlm(io, vcat([U], ε[:, i])) 
+            end
+        end
+        # ProgressMeter.next!(progbar)
     end
-    ProgressMeter.finish!(progbar)
+    # ProgressMeter.finish!(progbar)
     nthreads > 1 && BLAS.set_num_threads(n_blas) # restore original number of threads
 
     return ε
@@ -734,7 +744,7 @@ function quasienergy_dense(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real
     end
     executor = FLoops.ThreadedEx(basesize=length(Us)÷nthreads)
 
-    progbar = ProgressMeter.Progress(length(Us)) #  makes cores stop periodically when using floop
+    # progbar = ProgressMeter.Progress(length(Us))  # slows down conputation up to 1.5 times!
 
     @floop executor for (i, U) in enumerate(Us)
         @init begin
@@ -748,9 +758,9 @@ function quasienergy_dense(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real
         sol = solve(prob, Tsit5())
         ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
 
-        ProgressMeter.next!(progbar)
+        # ProgressMeter.next!(progbar)
     end
-    ProgressMeter.finish!(progbar)
+    # ProgressMeter.finish!(progbar)
     nthreads > 1 && BLAS.set_num_threads(n_blas) # restore original number of threads
 
     return ε
