@@ -1,5 +1,5 @@
-# launch as e.g. 
-#   $ julia --project -t 8 -e 'include("src/driver.jl")' &
+# A driving script for autonomous (non-interactive) calculation. Launch as e.g.
+#   $ julia --project -t 8 -e 'include("examples/driver.jl")' &
 using FloquetSystems, DelimitedFiles
 
 J = 1.0f0
@@ -19,6 +19,6 @@ lattice = Lattice(;dims=(2, 4), isperiodic=true)
 bh = BoseHamiltonian(lattice, J, U, f, ω)
 ε = quasienergy(bh, Us; outdir, nthreads=8);
 
-open(joinpath(outdir, "final.txt"), "w") do io
+open(joinpath(outdir, outdir*"-exact.txt"), "w") do io
     writedlm(io, vcat(Us', ε))
 end
