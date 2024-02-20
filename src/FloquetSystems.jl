@@ -6,7 +6,8 @@ include("BoseHamiltonian.jl")
 export Lattice,
     BoseHamiltonian,
     update_params!,
-    scan_U,
+    dpt,
+    dpt_quick,
     quasienergy,
     quasienergy_dense
 

@@ -22,6 +22,15 @@ function plotstate(bh::BoseHamiltonian, state::Vector{<:Number}, ε::Float64)
     display(fig)
 end
 
+"Return `n_isol` levels of `ε` using the permutation matrix `sp`."
+function isolate(ε, sp; n_isol)
+    E = Matrix{eltype(ε)}(undef, n_isol, size(ε, 2))
+    for i in eachindex(Us)
+        E[:, i] = ε[Int.(sp[1:n_isol, i]), i]
+    end
+    return E
+end
+
 nbozons = 5; ncells = 5
 lattice = Lattice(;dims=(1, ncells), isperiodic=true)
 nstates = length(lattice.basis_states)
@@ -76,11 +85,7 @@ Us = range(12, 15, 24)
 
 # isolating levels of interest
 sp = readdlm("f2_w20_U12-15_2x4-exact-perm.txt")
-n_isol = 1
-E = Matrix{eltype(ε)}(undef, n_isol, length(Us))
-for i in eachindex(Us)
-    E[:, i] = ε[Int.(sp[1:n_isol, i]), i]
-end
+
 
 gr()
 fig = scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
@@ -134,7 +139,7 @@ r = 2//3
 ωₗ = 0
 U₀ = float(ω) * r
 
-lattice = Lattice(;dims=(1, 7), isperiodic=true)
+lattice = Lattice(;dims=(1, 5), isperiodic=true)
 @time bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, ωₗ, type=:dpt, order=3);
 scatter!(1:length(lattice.basis_states), i -> bh.space_of_state[i][2], markersize=1, markerstrokewidth=0, legend=false)
 scatter!(abs.(bh.H[1, :]), markersize=1, markerstrokewidth=0, legend=false)
@@ -157,20 +162,28 @@ f2 = heatmap(abs.(M), yaxis=:flip, c=:viridis)
 heatmap(abs.(bh.H), yaxis=:flip, c=:viridis)
 plot(bh.H[diagind(bh.H)])
 
-nU = 64
+nU = 256
 Us = range(U₀-1, U₀+1, nU)
 Us = range(1.57, 1.71, nU)
+Us = range(12, 15, nU)
 
-spectrum = scan_U(bh, r, ωₗ, Us; type=:dpt_quick, order=3);
+spectrum, sp = dpt(bh, r, ωₗ, Us; order=3, sort=true);
+
+# remove Inf's
+mask = spectrum[1, :] .!= Inf
+spectrum = spectrum[:, mask]
+sp = sp[:, mask]
+Us = Us[mask]
+
+spec = isolate(spectrum, sp, n_isol=1)
 
 gr()
-plotlyjs()
 spectrum .%= ω
-spectrum = map(x -> !ismissing(x) && x < 0 ? x + ω : x, spectrum)
+spectrum[spectrum .< 0] .+= ω 
 figD2 = scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
 scatter!(Us, (spectrum .- ω)', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
 vline!([U₀], c=:red);
-ylims!(0, 3);
+ylims!(0, 3)
 title!("order = 3")
 ylims!(-5, 5)
 ylims!(figD2, (-0.6, -0.3));
@@ -189,9 +202,12 @@ scatter!(spectrum_file[1, :], spectrum_file[2:end, :]' .- ω, markersize=0.5, ma
 plot(figD2, figF, link=:y)
 ylims!(0, 2)
 
-open("calcs/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[2])-dpt3-rezoned.txt", "w") do io
-    mask = spectrum[1, :] .!== missing
-    writedlm(io, vcat(Us[mask]', spectrum[:, mask]))
+open("calcs/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[2])-dpt3.txt", "w") do io
+    writedlm(io, vcat(Us', spectrum))
+end
+
+open("calcs/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[2])-dpt3-perm.txt", "w") do io
+    writedlm(io, sp)
 end
 
 ####### Levels in the Floquet zone

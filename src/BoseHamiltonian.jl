@@ -558,55 +558,80 @@ function get_R2!(R, U, ω, f, ΔE1, ΔE2, d1, d2, J_indices, J_args, skipzero)
 end
 
 """
-Calculate and return the spectrum for the values of 𝑈 in `Us`, using degenerate theory: `type` should be `:dpt` or `:dpt_quick`.
-If `type=:dpt_quick`, then `subspace` must contain the subspace number (as in `bh.space_of_state[:][1]`) of interest.
+Calculate and return the spectrum for the values of 𝑈 in `Us`, using degenerate theory.
 `bh` is used as a parameter holder, but `bh.U`, `bh.type`, and `bh.order` do not matter --- function arguments are used instead.
+
+If `sort=true`, the second returned argument, which is the permutation matrix, will be populated.
+This allows one to isolate the quasienergies of states having the largest overlap with the ground state.
 """
-function scan_U(bh0::BoseHamiltonian{Float}, r::Rational, ωₗ::Real, Us::AbstractVector{<:Real}, subspace::Integer=0; type::Symbol, order::Integer) where {Float<:AbstractFloat}
+function dpt(bh0::BoseHamiltonian{Float}, r::Rational, ωₗ::Real, Us::AbstractVector{<:Real}; order::Integer, sort::Bool=false) where {Float<:AbstractFloat}
     (;J, f, ω) = bh0
 
     n_blas = BLAS.get_num_threads() # save original number of threads to restore later
     BLAS.set_num_threads(1)
     
     progbar = ProgressMeter.Progress(length(Us))
-    if type == :dpt
-        spectrum = Matrix{Union{Float,Missing}}(undef, size(bh0.H, 1), length(Us))
-        Threads.@threads for iU in eachindex(Us)
-            bh = BoseHamiltonian(bh0.lattice, J, Us[iU], f, ω, r, ωₗ; type, order);
-            # if `Us[iU]` is such that DPT is invalid, then `bh.H` is (or is close to being) singular, so that Inf's will appear during diagonalisation.
-            spectrum[:, iU] = try
+
+    nstates = size(bh0.H, 1)
+    nU = length(Us)
+    sp = Matrix{Int}(undef, nstates, nU) # sorting matrix
+    
+    spectrum = Matrix{Float}(undef, nstates, nU)
+    Threads.@threads for iU in eachindex(Us)
+        bh = BoseHamiltonian(bh0.lattice, J, Us[iU], f, ω, r, ωₗ; type=:dpt, order);
+        # if `Us[iU]` is such that DPT is invalid, then `bh.H` is (or is close to being) singular, so that Inf's will appear during diagonalisation.
+        try
+            if sort
+                spectrum[:, iU], v = eigen(Symmetric(bh.H))
+                sp[:, iU] = sortperm(abs2.(@view(v[1, :])), rev=true)
+            else
                 eigvals(Symmetric(bh.H))
-            catch e
-                spectrum[:, iU] .= missing
             end
-            ProgressMeter.next!(progbar)
+        catch ee
+            spectrum[:, iU] .= Inf # Inf signals that calculation for a given `Us[iU]` failed
+            # we are leaving sp[:, iU] undefined if calculation failed
         end
-    elseif type == :dpt_quick
-        # construct `space_of_state` because `bh0` does not necessarily contain it
-        space_of_state = map(bh0.E₀) do E
-            a = (E*r*ω - ωₗ) ÷ ω |> Int
-            A = E % denominator(r)
-            return (A, a)
+        ProgressMeter.next!(progbar)
+    end
+    ProgressMeter.finish!(progbar)
+    BLAS.set_num_threads(n_blas)
+    return spectrum, sp
+end
+
+"""
+Calculate and return the spectrum for the values of 𝑈 in `Us`, using partial degenerate theory
+`subspace` must contain the subspace number (as in `bh.space_of_state[:][1]`) of interest.
+`bh` is used as a parameter holder, but `bh.U`, `bh.type`, and `bh.order` do not matter --- function arguments are used instead.
+"""
+function dpt_quick(bh0::BoseHamiltonian{Float}, r::Rational, ωₗ::Real, Us::AbstractVector{<:Real}, subspace::Integer=0; order::Integer) where {Float<:AbstractFloat}
+    (;J, f, ω) = bh0
+
+    n_blas = BLAS.get_num_threads() # save original number of threads to restore later
+    BLAS.set_num_threads(1)
+    
+    progbar = ProgressMeter.Progress(length(Us))
+
+    # construct `space_of_state` because `bh0` does not necessarily contain it
+    space_of_state = map(bh0.E₀) do E
+        a = (E*r*ω - ωₗ) ÷ ω |> Int
+        A = E % denominator(r)
+        return (A, a)
+    end
+    As = findall(s -> s[1] == subspace, space_of_state) # `As` stores numbers of state that belong to space `subspace`
+    spectrum = Matrix{Float}(undef, length(As), length(Us))
+    Threads.@threads for iU in eachindex(Us)
+        h = zeros(Float, length(As), length(As)) # reduced matrix of the subspace of interest
+        bh = BoseHamiltonian(bh0.lattice, J, Us[iU], f, ω, r; type=:dpt_quick, order);
+        for i in eachindex(As), j in i:length(As)
+            h[j, i] = bh.H[As[j], As[i]]
         end
-        As = findall(s -> s[1] == subspace, space_of_state) # `As` stores numbers of state that belong to space `subspace`
-        spectrum = Matrix{Union{Float,Missing}}(undef, length(As), length(Us))
-        Threads.@threads for iU in eachindex(Us)
-            h = zeros(Float, length(As), length(As)) # reduced matrix of the subspace of interest
-            bh = BoseHamiltonian(bh0.lattice, J, Us[iU], f, ω, r; type, order);
-            for i in eachindex(As), j in i:length(As)
-                h[j, i] = bh.H[As[j], As[i]]
-            end
-            # if `Us[iU]` is such that DPT is invalid, then `bh.H` is (or is close to being) singular, so that Inf's will appear during diagonalisation.
-            spectrum[:, iU] = try
-                eigvals(Symmetric(h, :L))
-            catch e
-                spectrum[:, iU] .= missing
-            end
-            ProgressMeter.next!(progbar)
+        # if `Us[iU]` is such that DPT is invalid, then `bh.H` is (or is close to being) singular, so that Inf's will appear during diagonalisation.
+        spectrum[:, iU] = try
+            eigvals(Symmetric(h, :L))
+        catch e
+            spectrum[:, iU] .= Inf # Inf signals that calculation for a given `Us[iU]` failed
         end
-    else
-        @error "Unknown type" type
-        spectrum = zeros(1, 1)
+        ProgressMeter.next!(progbar)
     end
     ProgressMeter.finish!(progbar)
     BLAS.set_num_threads(n_blas)
