@@ -570,10 +570,15 @@ function scan_U(bh0::BoseHamiltonian{Float}, r::Rational, ωₗ::Real, Us::Abstr
     
     progbar = ProgressMeter.Progress(length(Us))
     if type == :dpt
-        spectrum = Matrix{Float}(undef, size(bh0.H, 1), length(Us))
+        spectrum = Matrix{Union{Float,Missing}}(undef, size(bh0.H, 1), length(Us))
         Threads.@threads for iU in eachindex(Us)
             bh = BoseHamiltonian(bh0.lattice, J, Us[iU], f, ω, r, ωₗ; type, order);
-            spectrum[:, iU] = eigvals(Symmetric(bh.H))
+            # if `Us[iU]` is such that DPT is invalid, then `bh.H` is (or is close to being) singular, so that Inf's will appear during diagonalisation.
+            spectrum[:, iU] = try
+                eigvals(Symmetric(bh.H))
+            catch e
+                spectrum[:, iU] .= missing
+            end
             ProgressMeter.next!(progbar)
         end
     elseif type == :dpt_quick
@@ -584,14 +589,19 @@ function scan_U(bh0::BoseHamiltonian{Float}, r::Rational, ωₗ::Real, Us::Abstr
             return (A, a)
         end
         As = findall(s -> s[1] == subspace, space_of_state) # `As` stores numbers of state that belong to space `subspace`
-        spectrum = Matrix{Float}(undef, length(As), length(Us))
+        spectrum = Matrix{Union{Float,Missing}}(undef, length(As), length(Us))
         Threads.@threads for iU in eachindex(Us)
             h = zeros(Float, length(As), length(As)) # reduced matrix of the subspace of interest
             bh = BoseHamiltonian(bh0.lattice, J, Us[iU], f, ω, r; type, order);
             for i in eachindex(As), j in i:length(As)
                 h[j, i] = bh.H[As[j], As[i]]
             end
-            spectrum[:, iU] = eigvals(Symmetric(h, :L))
+            # if `Us[iU]` is such that DPT is invalid, then `bh.H` is (or is close to being) singular, so that Inf's will appear during diagonalisation.
+            spectrum[:, iU] = try
+                eigvals(Symmetric(h, :L))
+            catch e
+                spectrum[:, iU] .= missing
+            end
             ProgressMeter.next!(progbar)
         end
     else

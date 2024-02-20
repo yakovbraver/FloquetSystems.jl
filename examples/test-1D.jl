@@ -63,7 +63,7 @@ yaxis!((-2, 2))
 yaxis!((-10.5, 10.5))
 
 # Exact quasienergy spectrum
-lattice = Lattice(;dims=(1, 6), isperiodic=true)
+lattice = Lattice(;dims=(2, 4), isperiodic=true)
 J = 1.0f0 # setting to 1 so that `U` is measured in units of `J`
 ω = 20
 U = 1
@@ -71,14 +71,15 @@ f = 2
 bh = BoseHamiltonian(lattice, J, U, f, ω)
 
 Us = range(13, 13.6, 8)
-Us = range(12, 15, 10)
-@time ε, sp = quasienergy(bh, Us, nthreads=8, order=true, outdir="muhmuh");
+Us = range(12, 15, 24)
+@time ε, sp = quasienergy(bh, Us, nthreads=1);
 
 # isolating levels of interest
+sp = readdlm("f2_w20_U12-15_2x4-exact-perm.txt")
 n_isol = 1
-E = Matrix{typeof(J)}(undef, n_isol, length(Us))
+E = Matrix{eltype(ε)}(undef, n_isol, length(Us))
 for i in eachindex(Us)
-    E[:, i] = ε[sp[1:n_isol, i], i]
+    E[:, i] = ε[Int.(sp[1:n_isol, i]), i]
 end
 
 gr()
@@ -89,7 +90,7 @@ ylims!(-ω/2, ω/2)
 ylims!(-2, 2)
 vline!([U₀], c=:red)
 title!(fig, L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact")
-savefig("f$(f)_w$(ω)_2d3_$(lattice.dims[1])x$(lattice.dims[2])-exact.png")
+savefig("f$(f)_w$(ω)_2d3_$(lattice.dims[1])x$(lattice.dims[2])-exact-$(n_isol).png")
 ylims!(1, 2)
 xlims!(Us[1], Us[end])
 for k in [1, 2, 3, 4, 6, 7, 10, 15]
@@ -103,12 +104,14 @@ scatter!(spectrum[:, u], xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=1, m
 sp2 = copy(spectrum)
 
 using DelimitedFiles
-ε_old = readdlm("calcs/f2_w20_U12-15_2x4-exact.txt")
-fig = scatter(ε_old[1, :], ε_old[2:end, :]', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", exact", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
-scatter!(ε_old[1, :], ε_old[2:end, :]' .+ ω, markersize=0.5, markerstrokewidth=0, c=colour);
-scatter!(ε_old[1, :], ε_old[2:end, :]' .- ω, markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native);
+ε_old = readdlm("f2_w20_U12-15_2x4-exact.txt")
+ε = ε_old[2:end, :]
+Us = ε_old[1, :]
+fig = scatter(Us, E', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", exact", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
+scatter!(Us, E' .+ ω, markersize=0.5, markerstrokewidth=0, c=colour);
+scatter!(Us, E' .- ω, markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native);
 vline!([U₀], c=:red);
-ylims!(-3, 3);
+ylims!(-3, 3)
 title!(fig, L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact");
 xlims!(12.33, 14.33);
 xlims!(6, 8)
@@ -131,7 +134,7 @@ r = 2//3
 ωₗ = 0
 U₀ = float(ω) * r
 
-lattice = Lattice(;dims=(2, 3), isperiodic=true)
+lattice = Lattice(;dims=(1, 7), isperiodic=true)
 @time bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, ωₗ, type=:dpt, order=3);
 scatter!(1:length(lattice.basis_states), i -> bh.space_of_state[i][2], markersize=1, markerstrokewidth=0, legend=false)
 scatter!(abs.(bh.H[1, :]), markersize=1, markerstrokewidth=0, legend=false)
@@ -154,21 +157,21 @@ f2 = heatmap(abs.(M), yaxis=:flip, c=:viridis)
 heatmap(abs.(bh.H), yaxis=:flip, c=:viridis)
 plot(bh.H[diagind(bh.H)])
 
-nU = 80
+nU = 64
 Us = range(U₀-1, U₀+1, nU)
 Us = range(1.57, 1.71, nU)
 
-@time spectrum = scan_U(bh, r, ωₗ, Us; type=:dpt, order=3);
+spectrum = scan_U(bh, r, ωₗ, Us; type=:dpt_quick, order=3);
 
 gr()
 plotlyjs()
 spectrum .%= ω
-spectrum[spectrum .< 0] .+= ω
-figD2 = scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false)
+spectrum = map(x -> !ismissing(x) && x < 0 ? x + ω : x, spectrum)
+figD2 = scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
 scatter!(Us, (spectrum .- ω)', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
 vline!([U₀], c=:red);
 ylims!(0, 3);
-title!("order = 2")
+title!("order = 3")
 ylims!(-5, 5)
 ylims!(figD2, (-0.6, -0.3));
 ylims!(figD2, (-ω/2, ω/2))
@@ -187,7 +190,8 @@ plot(figD2, figF, link=:y)
 ylims!(0, 2)
 
 open("calcs/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[2])-dpt3-rezoned.txt", "w") do io
-    writedlm(io, vcat(Us', spectrum))
+    mask = spectrum[1, :] .!== missing
+    writedlm(io, vcat(Us[mask]', spectrum[:, mask]))
 end
 
 ####### Levels in the Floquet zone
