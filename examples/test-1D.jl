@@ -72,7 +72,7 @@ yaxis!((-2, 2))
 yaxis!((-10.5, 10.5))
 
 # Exact quasienergy spectrum
-lattice = Lattice(;dims=(2, 4), isperiodic=true)
+lattice = Lattice(;dims=(1, 5), isperiodic=true)
 J = 1.0f0 # setting to 1 so that `U` is measured in units of `J`
 ω = 20
 U = 1
@@ -80,12 +80,10 @@ f = 2
 bh = BoseHamiltonian(lattice, J, U, f, ω)
 
 Us = range(13, 13.6, 8)
-Us = range(12, 15, 24)
-@time ε, sp = quasienergy(bh, Us, nthreads=1);
-
-# isolating levels of interest
-sp = readdlm("f2_w20_U12-15_2x4-exact-perm.txt")
-
+Us = range(12, 15, 300)
+ε, sp = quasienergy(bh, Us, nthreads=8);
+c, p = quasienergy(bh, Us, nthreads=8)
+@code_warntype FloquetSystems.schrodinger!(c, c, p, 1) 
 
 gr()
 fig = scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
@@ -109,20 +107,26 @@ scatter!(spectrum[:, u], xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=1, m
 sp2 = copy(spectrum)
 
 using DelimitedFiles
-ε_old = readdlm("f2_w20_U12-15_2x4-exact.txt")
+ε_old = readdlm("calcs/2x4/f5_w10_U6-8_2x4-exact.txt")
+sp = readdlm("calcs/2x4/f5_w10_U6-8_2x4-exact-perm.txt")
 ε = ε_old[2:end, :]
 Us = ε_old[1, :]
+# isolating levels of interest
+n_isol = 200
+E = isolate(ε, sp; n_isol)
+
 fig = scatter(Us, E', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", exact", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
 scatter!(Us, E' .+ ω, markersize=0.5, markerstrokewidth=0, c=colour);
 scatter!(Us, E' .- ω, markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native);
 vline!([U₀], c=:red);
-ylims!(-3, 3)
 title!(fig, L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact");
+ylims!(-3, 3)
 xlims!(12.33, 14.33);
-xlims!(6, 8)
-ylims!(-ω/2, ω/2);
+xlims!(1.5, 1.8)
+ylims!(-ω/2, ω/2)
+ylims!(-1.3, -0.8)
 
-savefig("f$(f)_w$(ω)_2d3_$(lattice.dims[1])x$(lattice.dims[2])-exact.png")
+savefig("calcs/2x4/f$(f)_w$(ω)_$(numerator(r))d$(denominator(r))_$(lattice.dims[1])x$(lattice.dims[2])-exact-$n_isol.png")
 
 open("calcs/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[2])-exact.txt", "w") do io
     writedlm(io, vcat(Us', ε))
@@ -131,16 +135,17 @@ end
 # degenerate theory
 
 J = 1.0f0 # setting to 1 so that `U` is measured in units of `J`
-f = 2
-ω = 20
+f = 5
+ω = 10
 
-r = 2//3
+r = 1//6
 
-ωₗ = 0
+ωₗ = -ω/2
 U₀ = float(ω) * r
 
-lattice = Lattice(;dims=(1, 5), isperiodic=true)
-@time bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, ωₗ, type=:dpt, order=3);
+lattice = Lattice(;dims=(2, 4), isperiodic=true)
+bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, ωₗ, type=:dpt, order=2);
+@time update_params!(bh; f)
 scatter!(1:length(lattice.basis_states), i -> bh.space_of_state[i][2], markersize=1, markerstrokewidth=0, legend=false)
 scatter!(abs.(bh.H[1, :]), markersize=1, markerstrokewidth=0, legend=false)
 scatter(diag(bh.H), markersize=1, markerstrokewidth=0, legend=false)
@@ -162,12 +167,13 @@ f2 = heatmap(abs.(M), yaxis=:flip, c=:viridis)
 heatmap(abs.(bh.H), yaxis=:flip, c=:viridis)
 plot(bh.H[diagind(bh.H)])
 
-nU = 256
+nU = 300
 Us = range(U₀-1, U₀+1, nU)
 Us = range(1.57, 1.71, nU)
 Us = range(12, 15, nU)
+Us = range(0, ω, nU)
 
-spectrum, sp = dpt(bh, r, ωₗ, Us; order=3, sort=true);
+spectrum, sp = dpt(bh, r, ωₗ, Us; order=2, sort=false);
 
 # remove Inf's
 mask = spectrum[1, :] .!= Inf
@@ -192,15 +198,36 @@ xlims!(12.33, 14.33);
 plot(fig, figD2)
 plot!(xlims=(U₀-1, U₀+1), ylims=(-2, 2), title="isolated")
 
-savefig("f$(f)_w$(ω)_$(numerator(r))d$(denominator(r))_$(lattice.dims[1])x$(lattice.dims[2])-dpt2.png")
+savefig("f$(f)_w$(ω)_$(numerator(r))d$(denominator(r))_$(lattice.dims[1])x$(lattice.dims[2])-dpt3-$n_isol.png")
 
 using DelimitedFiles
-spectrum_file = readdlm("calcs/f2_w20_U12.3-14.3_2x3-dpt3-rezoned.txt")
-figF = scatter(spectrum_file[1, :], spectrum_file[2:end, :]', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native);
-scatter!(spectrum_file[1, :], spectrum_file[2:end, :]' .+ ω, markersize=0.5, markerstrokewidth=0, c=colour);
-scatter!(spectrum_file[1, :], spectrum_file[2:end, :]' .- ω, markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native);
-plot(figD2, figF, link=:y)
-ylims!(0, 2)
+f = 2
+ω = 20
+r = 1//6
+spectrum_file = readdlm("calcs/2x4/f$(f)_w$(ω)_U0-30_2x4-dpt3.txt")
+sp = readdlm("calcs/2x4/f$(f)_w$(ω)_U0-30_2x4-dpt3-perm.txt")
+
+Us = spectrum_file[1, :]
+spectrum = spectrum_file[2:end, :]
+
+# remove Inf's
+mask = spectrum[1, :] .!= Inf
+spectrum = spectrum[:, mask]
+sp = sp[:, mask]
+Us = Us[mask]
+
+n_isol = 200
+spec = isolate(spectrum, sp; n_isol)
+
+figD = scatter(Us, spec', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
+scatter!(Us, spec' .+ ω, markersize=0.5, markerstrokewidth=0, c=colour);
+scatter!(Us, spec' .- ω, markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native);
+title!(figD, L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, order = 3, rz");
+xlims!(9, 11);
+ylims!(-ω/2, ω/2)
+ylims!(-1.3, -0.8)
+
+savefig("calcs/2x4/f$(f)_w$(ω)_$(numerator(r))d$(denominator(r))_$(lattice.dims[1])x$(lattice.dims[2])-rz-dpt3-$n_isol.png")
 
 open("calcs/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[2])-dpt3.txt", "w") do io
     writedlm(io, vcat(Us', spectrum))
@@ -212,15 +239,59 @@ end
 
 ####### Levels in the Floquet zone
 gr()
-r = 2//3
+f = 5
+ω = 10
+lattice = Lattice(;dims=(2, 4), isperiodic=true)
+r = 1//6
 U₀ = float(ω) * r
-bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, type=:dpt, order=1);
-fig0 = scatter(bh.E₀*U₀, markersize=2, markerstrokewidth=0, minorgrid=true, ylabel=L"\varepsilon/J", xlabel="level number");
-scatter!(bh.E₀*U₀ .+ ω, markersize=2, markerstrokewidth=0, minorgrid=true, ylabel=L"\varepsilon/J", xlabel="level number");
+ωₗ = -ω/2
+ωₗ = 0
+bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, ωₗ; type=:dpt, order=2);
+e = sort(bh.E₀*U₀)
+e = bh.E₀*U₀
+fig0 = scatter(e, markersize=2, markerstrokewidth=0, minorgrid=true, ylabel=L"\varepsilon/J", xlabel="level number", legend=false)
+scatter!(e .+ ω, markersize=2, markerstrokewidth=0, minorgrid=true, ylabel=L"\varepsilon/J", xlabel="level number");
 for i in 1:20
-    scatter!(fig0, bh.E₀*U₀ .- i*ω, markersize=2, markerstrokewidth=0, legend=false);
+    scatter!(fig0, e .- i*ω, markersize=2, markerstrokewidth=0, legend=false);
 end
 title!(L"\omega=%$(ω),\ U = 2\omega/3"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice")
-hline!([-ω/2, ω/2], c=:white)
+hline!([-ω/2, ω/2], c=:white);
 ylims!(-1.5ω, 1.5ω)
 savefig("levels_w$(ω)_$(numerator(r))d$(denominator(r))_$(lattice.dims[1])x$(lattice.dims[2]).pdf")
+
+crit(bh.H)
+
+M = copy(bh.H)
+M[diagind(M)] .= 0
+heatmap(M, yaxis=:flip, c=:viridis)
+eigvals(bh.H)
+
+findall(isnan, bh.H)
+count(isnan, bh.H)
+
+scatter!(abs.(bh.H[1, 2:end]), markersize=2, markerstrokewidth=0, label="$ωₗ")
+scatter!(1:length(lattice.basis_states), i -> bh.space_of_state[i][2], markersize=1, markerstrokewidth=0, legend=false)
+bh.space_of_state[6205][2]
+bh.space_of_state[6383][2]
+
+function crit(h)
+    cr = 0.0
+    for c in 1:size(h, 1) - 1
+        for r in c+1:size(h, 1)
+            d = abs(h[r, r] - h[c, c])
+            if d > 1e-7
+                cr += abs(h[r, c]) / d
+            end
+        end
+    end
+    cr
+end
+
+
+
+ε = Vector{Float64}(undef, length(bh.E₀)) # energies (including 𝑈 multiplier) reduced to first Floquet zone
+for i in eachindex(bh.E₀)
+    ε[i] = bh.E₀[i]*U₀ - bh.space_of_state[i][2]*ω
+end
+fig0 = scatter(ε, markersize=1, markerstrokewidth=0, minorgrid=true, ylabel=L"\varepsilon/J", xlabel="level number", legend=false)
+ylims!(-5, 5)

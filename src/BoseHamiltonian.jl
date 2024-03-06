@@ -44,7 +44,8 @@ function BoseHamiltonian(lattice::Lattice, J::Float, U::Real, f::Real, ω::Real,
         Vector{Tuple{Int,Int}}()
     else
         map(E₀) do E
-            a = (E*r*ω - ωₗ) ÷ ω |> Int
+            # rounding helps in cases such as when E*U - ωₗ = 29.999999999999996 and ÷10 gives 2 instead of 3
+            a = round(E*U - ωₗ, sigdigits=6) ÷ ω |> Int
             A = E % denominator(r)
             return (A, a)
         end
@@ -273,6 +274,7 @@ function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Floa
     R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float}()
     R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float}()
     R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int}, Float}()
+    bra = similar(bh.lattice.basis_states[1])
     # take each basis state and find which transitions are possible
     for (ket, α) in index_of_state
         A, a = space_of_state[α]
@@ -280,7 +282,7 @@ function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Floa
             # 1st order
             for (j, i_j) in neis_of_cell[i]
                 if (ket[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
-                    bra = copy(ket)
+                    copy!(bra, ket)
                     bra[j] -= 1
                     bra[i] += 1
                     α′ = index_of_state[bra]
@@ -296,7 +298,7 @@ function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Floa
                         # 𝑎†ᵢ 𝑎ⱼ 𝑎†ₖ 𝑎ₗ
                         if ( ket[l] > 0 && (j == k || (j == l && ket[j] > 1) || (j != l && ket[j] > 0)) )
                             val = +J^2/2
-                            bra = copy(ket)
+                            copy!(bra, ket)
                             val *= √bra[l]
                             bra[l] -= 1
                             bra[k] += 1
@@ -321,7 +323,7 @@ function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Floa
                     for k = 1:ncells, (l, k_l) in neis_of_cell[k], m = 1:ncells, (n, m_n) in neis_of_cell[m]
                         # 𝑎†ᵢ 𝑎ⱼ 𝑎†ₖ 𝑎ₗ 𝑎†ₘ 𝑎ₙ
                         ket[n] == 0 && continue
-                        bra = copy(ket)
+                        copy!(bra, ket)
                         val = -J^3/2
                         val *= √bra[n]; bra[n] -= 1; bra[m] += 1; val *= √bra[m]
                         bra[l] == 0 && continue
@@ -585,7 +587,7 @@ function dpt(bh0::BoseHamiltonian{Float}, r::Rational, ωₗ::Real, Us::Abstract
                 spectrum[:, iU], v = eigen(Symmetric(bh.H))
                 sp[:, iU] = sortperm(abs2.(@view(v[1, :])), rev=true)
             else
-                eigvals(Symmetric(bh.H))
+                spectrum[:, iU] = eigvals(Symmetric(bh.H))
             end
         catch ee
             spectrum[:, iU] .= Inf # Inf signals that calculation for a given `Us[iU]` failed
@@ -660,18 +662,19 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
     H_sign = Float[] # stores the sign of the tunneling phase for each off-diagonal element, multiplied by `f`
 
     # Fill the off-diagonal elemnts of the Hamiltonian for `f` = 0
-    for (state, index) in index_of_state
+    bra = similar(bh.lattice.basis_states[1])
+    for (ket, index) in index_of_state
         for i = 1:ncells # iterate over the terms of the Hamiltonian
             for (j, s) in neis_of_cell[i]
                 # 𝑎†ᵢ 𝑎ⱼ
-                if (state[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
-                    val = -im * -J * sqrt( (state[i]+1) * state[j] ) # multiply by `-im` as in the rhs of ∂ₜ𝜓 = -i𝐻𝜓
-                    bra = copy(state)
+                if (ket[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
+                    val = -im * -J * sqrt( (ket[i]+1) * ket[j] ) # multiply by `-im` as in the rhs of ∂ₜ𝜓 = -i𝐻𝜓
+                    copy!(bra, ket)
                     bra[j] -= 1
                     bra[i] += 1
                     row = index_of_state[bra]
                     push_state!(H_rows, H_cols, H_vals, val; row, col=index)
-                    push!(H_sign, s*f)
+                    push!(H_sign, s)
                 end
             end
         end
@@ -681,6 +684,7 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
 
     # append placeholders for storing diagonal elements
     append!(H_vals, zeros(Float, nstates))
+    append!(H_sign, zeros(Float, nstates))
     append!(H_rows, 1:nstates)
     append!(H_cols, 1:nstates)
 
@@ -691,6 +695,16 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
     
     T = 2π / ω
     tspan = (0.0, T)
+    
+    S = sparse(H_rows, H_cols, H_sign) # construct the "sign" matrix
+    H_sign_vals = nonzeros(S) # get the values so that they are in the same order as `H_base_vals`
+
+    # diagonal of `H_buff` will remain equal to -𝑖𝑈 times the diagonal of `H` throughout diffeq solving,
+    # while off-diagnoal elements will be mutated at each step
+    H_buff = sparse(H_rows, H_cols, H_vals) # construct the buffer
+    H_buff_vals = nonzeros(H_buff) # get a view to non-zero elements, will be used for mutating
+    H_rows, H_cols, H_base_vals = findnz(H_buff) # `H_base_vals` is a copy of values that will not be mutated
+    dind = (H_rows .== H_cols)
 
     if nthreads > 1
         n_blas = BLAS.get_num_threads() # save original number of threads to restore later
@@ -702,37 +716,49 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
 
     # if `outdir` is given but does not exist, then create it
     (outdir != "" && !isdir(outdir)) && mkdir(outdir)
-
-    @floop executor for (i, U) in enumerate(Us)
-        @init begin
-            # diagonal of `H_buff` will remain equal to -𝑖𝑈 times the diagonal of `H` throughout diffeq solving,
-            # while off-diagnoal elemnts will be mutated at each step
-            H_vals_buff = similar(H_vals)
-        end
-        H_vals_buff[end-nstates+1:end] .= U .* (-im .* E₀) # update last `nstates` values in `H_vals_U` -- these are diagonal elements of the Hamiltonian
-        params = (H_rows, H_cols, H_vals_buff, H_vals, H_sign, ω, nstates)
-        prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false)
-        sol = solve(prob, Tsit5())
-
-        if order # find and save only `nsaves` quasienergies having the largest overlap with the unperturbed ground state
-            e, v = eigen(sol[end])
-            sp[:, i] = sortperm(abs2.(@view(v[1, :])), rev=true)
-            ε[:, i] = -ω .* angle.(e) ./ 2π
-        else
-            ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
-        end
-
-        if outdir != ""
-            open(joinpath(outdir, "$(i).txt"), "w") do io
-                if order
-                    writedlm(io, vcat([U U], [ε[:, i] sp[:, i]]))
-                else
-                    writedlm(io, vcat([U], ε[:, i]))
-                end
-            end
-        end
-        # ProgressMeter.next!(progbar)
+    
+    nt = Threads.nthreads()
+    H_buff_chnl = Channel{typeof(H_buff)}(nt)
+    for _ in 1:nt
+        put!(H_buff_chnl, H_buff)
     end
+
+    params = (H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f)
+    prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false, save_start=false)
+    integrator = OrdinaryDiffEq.init(prob, Tsit5())
+
+    # Threads.@threads for i in eachindex(Us)
+    @time for i in eachindex(Us)
+        U = Us[i]
+        # H_buff = take!(H_buff_chnl)
+        H_buff_vals = nonzeros(H_buff) # a view to non-zero elements
+        # Update diagonal of the Hamiltonian. If `H_sign_vals[i] == 0` then this `i` corresponds to a diagnoal value
+        H_buff_vals[dind] .= U .* (-im .* E₀) # update diagonal of the Hamiltonian
+        
+        integrator.p = (H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f)
+        reinit!(integrator, C₀)
+        sol = solve!(integrator)
+
+        # if order # find and save only `nsaves` quasienergies having the largest overlap with the unperturbed ground state
+        #     e, v = eigen(sol[end])
+        #     sp[:, i] = sortperm(abs2.(@view(v[1, :])), rev=true)
+        #     ε[:, i] = -ω .* angle.(e) ./ 2π
+        # else
+        #     ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
+        # end
+
+        # if outdir != ""
+        #     open(joinpath(outdir, "$(i).txt"), "w") do io
+        #         if order
+        #             writedlm(io, vcat([U U], [ε[:, i] sp[:, i]]))
+        #         else
+        #             writedlm(io, vcat([U], ε[:, i]))
+        #         end
+        #     end
+        # end
+        # put!(H_buff_chnl, H_buff)
+    end
+        # ProgressMeter.next!(progbar)
     # ProgressMeter.finish!(progbar)
     nthreads > 1 && BLAS.set_num_threads(n_blas) # restore original number of threads
 
@@ -740,11 +766,18 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
 end
 
 "Schrödinger equation used for monodromy matrix calculation."
-function schrodinger!(du, u, p, t)
-    H_rows, H_cols, H_vals_buff, H_vals_base, H_sign, ω, nstates = p
-    H_vals_buff[1:end-nstates] .= @view(H_vals_base[1:end-nstates]) .* cis.(sin(ω.*t) .* H_sign) # update off diagonal elements of the Hamiltonian
-    H = sparse(H_rows, H_cols, H_vals_buff)
-    mul!(du, H, u)
+function schrodinger!(du, u, params, t)
+    H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f = params
+    # update off diagonal elements of the Hamiltonian
+    p = cis(f * sin(ω*t)); n = cis(-f * sin(ω*t));
+    for (i, s) in enumerate(H_sign_vals)
+        if s > 0 
+            H_buff_vals[i] = H_base_vals[i] * p
+        elseif s < 0
+            H_buff_vals[i] = H_base_vals[i] * n
+        end
+    end
+    mul!(du, H_buff, u)
 end
 
 """
