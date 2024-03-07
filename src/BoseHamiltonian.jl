@@ -1,6 +1,6 @@
-using OrdinaryDiffEq, SparseArrays, DelimitedFiles
+using OrdinaryDiffEq, SparseArrays, DelimitedFiles, FastLapackInterface
 using SpecialFunctions: besselj0, besselj
-using LinearAlgebra: diagind, diag, eigvals, mul!, Symmetric, I, BLAS, eigen
+using LinearAlgebra: LAPACK, BLAS, Eigen, Symmetric, I, diagind, diag, eigen, eigvals, mul!
 using ProgressMeter: @showprogress
 import ProgressMeter
 using FLoops: @floop, @init
@@ -650,10 +650,10 @@ If `outdir` is passed, a new directory will be created (if it does not exist) wh
 will be output immediately after calculation. The files are named as "<i>.txt"; the first value in the files is `Us[i]`, and the following
 are the quasienergies.
 
-If `order=true`, the second returned argument, which is the permutation matrix, will be populated.
+If `sort=true`, the second returned argument, which is the permutation matrix, will be populated.
 This allows one to isolate the quasienergies of states having the largest overlap with the ground state.
 """
-function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nthreads::Int=Threads.nthreads(), outdir::String="", order::Bool=true) where {Float<:AbstractFloat}
+function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nthreads::Int=Threads.nthreads(), outdir::String="", sort::Bool=false) where {Float<:AbstractFloat}
     (;J, f, ω, E₀) = bh
     Cmplx = (Float == Float32 ? ComplexF32 : ComplexF64)
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
@@ -717,11 +717,13 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
     # if `outdir` is given but does not exist, then create it
     (outdir != "" && !isdir(outdir)) && mkdir(outdir)
     
-    nt = Threads.nthreads()
-    H_buff_chnl = Channel{typeof(H_buff)}(nt)
-    for _ in 1:nt
-        put!(H_buff_chnl, H_buff)
-    end
+    # nt = Threads.nthreads()
+    # H_buff_chnl = Channel{typeof(H_buff)}(nt)
+    # for _ in 1:nt
+    #     put!(H_buff_chnl, H_buff)
+    # end
+
+    workspace = EigenWs(C₀, rvecs=sort)
 
     params = (H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f)
     prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false, save_start=false)
@@ -739,23 +741,25 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
         reinit!(integrator, C₀)
         sol = solve!(integrator)
 
-        # if order # find and save only `nsaves` quasienergies having the largest overlap with the unperturbed ground state
-        #     e, v = eigen(sol[end])
-        #     sp[:, i] = sortperm(abs2.(@view(v[1, :])), rev=true)
-        #     ε[:, i] = -ω .* angle.(e) ./ 2π
-        # else
-        #     ε[:, i] = -ω .* angle.(eigvals(sol[end])) ./ 2π
-        # end
+        if sort
+            t = LAPACK.geevx!(workspace, 'N', 'N', 'V', 'N', sol[end]) # this updates `workspace`
+            e, v = t[2], t[4] # convenience views
+            sortperm!(@view(sp[:, i]), @view(v[1, :]), rev=true, by=abs2)
+            @. ε[:, i] = -ω .* angle.(e) ./ 2π
+        else
+            LAPACK.geevx!(workspace, 'N', 'N', 'N', 'N', sol[end]) # this updates `workspace`
+            @. ε[:, i] = -ω * angle(workspace.W) / 2π
+        end
 
-        # if outdir != ""
-        #     open(joinpath(outdir, "$(i).txt"), "w") do io
-        #         if order
-        #             writedlm(io, vcat([U U], [ε[:, i] sp[:, i]]))
-        #         else
-        #             writedlm(io, vcat([U], ε[:, i]))
-        #         end
-        #     end
-        # end
+        if outdir != ""
+            open(joinpath(outdir, "$(i).txt"), "w") do io
+                if sort
+                    writedlm(io, vcat([U U], [ε[:, i] sp[:, i]]))
+                else
+                    writedlm(io, vcat([U], ε[:, i]))
+                end
+            end
+        end
         # put!(H_buff_chnl, H_buff)
     end
         # ProgressMeter.next!(progbar)
