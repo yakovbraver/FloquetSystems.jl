@@ -72,7 +72,7 @@ yaxis!((-2, 2))
 yaxis!((-10.5, 10.5))
 
 # Exact quasienergy spectrum
-lattice = Lattice(;dims=(1, 5), isperiodic=true)
+lattice = Lattice(;dims=(1, 6), isperiodic=true)
 J = 1.0f0 # setting to 1 so that `U` is measured in units of `J`
 ω = 20
 U = 1
@@ -81,10 +81,7 @@ bh = BoseHamiltonian(lattice, J, U, f, ω)
 
 # Us = range(13, 13.6, 200)
 Us = range(12, 15, 300)
-@time ε, sp = quasienergy(bh, Us, nthreads=8, sort=true);
-
-# 8 threads, sort=false:  1.094874 seconds (5.70 k allocations: 164.535 MiB, 0.97% gc time)
-#            sort=true:   1.235660 seconds (6.00 k allocations: 166.532 MiB, 0.66% gc time)     
+ε, sp = quasienergy(bh, Us, sort=false);
 
 gr()
 fig = scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);

@@ -9,15 +9,15 @@ f = 2
 Us = range(12, 15, 24)
 
 # warm up
-lattice = Lattice(;dims=(1, 6), isperiodic=true)
+lattice = Lattice(;dims=(1, 5), isperiodic=true)
 bh = BoseHamiltonian(lattice, J, U, f, ω)
-quasienergy(bh, Us; order=true);
+quasienergy(bh, Us; sort=true, showprogress=false, gctrick=true);
 
 # actual calculation
 lattice = Lattice(;dims=(2, 4), isperiodic=true)
 outdir = "f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[2])"
 bh = BoseHamiltonian(lattice, J, U, f, ω)
-ε, sp = quasienergy(bh, Us; order=true, outdir);
+ε, sp = quasienergy(bh, Us; sort=true, showprogress=false, gctrick=true, outdir);
 
 open(joinpath(outdir, outdir*"-exact.txt"), "w") do io
     writedlm(io, vcat(Us', ε))

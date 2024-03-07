@@ -642,24 +642,27 @@ end
 
 """
 Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`.
-By default, loop over `Us` is parallelised using all threads that julia was launched with: `nthreads=Threads.nthreads()`.
+Loop over `Us` is parallelised using all threads that julia was launched with: `nthreads=Threads.nthreads()`.
 Setting `nthreads=1` makes the loop over `Us` sequential, but the diffeq solving uses BLAS threading.
 For `nthreads > 1`, BLAS threading is turned off, but is restored to the original state upon finishing the calculation.
 
 If `outdir` is passed, a new directory will be created (if it does not exist) where the quasienergy spectrum at each `i`th value of `Us`
-will be output immediately after calculation. The files are named as "<i>.txt"; the first value in the files is `Us[i]`, and the following
+will be output immediately after calculation. The files are named as "<i>.txt"; the first value in the file is `Us[i]`, and the following
 are the quasienergies.
 
 If `sort=true`, the second returned argument, which is the permutation matrix, will be populated.
 This allows one to isolate the quasienergies of states having the largest overlap with the ground state.
+
+For large sysems (≥8 particles), GC will cause prominent core-stopping as ODE solving allocates. 
+In that case, pass `gctrick=true` so that GC is performed manually once all threads finish an interation.
 """
-function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nthreads::Int=Threads.nthreads(), outdir::String="", sort::Bool=false) where {Float<:AbstractFloat}
+function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true, gctrick=false) where {Float<:AbstractFloat}
     (;J, f, ω, E₀) = bh
     Cmplx = (Float == Float32 ? ComplexF32 : ComplexF64)
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
     
     H_rows, H_cols, H_vals = Int[], Int[], Cmplx[]
-    H_sign = Float[] # stores the sign of the tunneling phase for each off-diagonal element, multiplied by `f`
+    H_sign = Float[] # stores the sign of the tunneling phase for each off-diagonal element
 
     # Fill the off-diagonal elemnts of the Hamiltonian for `f` = 0
     bra = similar(bh.lattice.basis_states[1])
@@ -704,18 +707,16 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
     H_rows, H_cols, H_base_vals = findnz(H_base)
     dind = (H_rows .== H_cols)
 
+    nthreads = Threads.nthreads()
     if nthreads > 1
         n_blas = BLAS.get_num_threads() # save original number of threads to restore later
         BLAS.set_num_threads(1)
     end
-    executor = FLoops.ThreadedEx(basesize=length(Us)÷nthreads)
-
-    # progbar = ProgressMeter.Progress(length(Us); enabled=showprogress) # slows down conputation up to 1.5 times!
 
     # if `outdir` is given but does not exist, then create it
     (outdir != "" && !isdir(outdir)) && mkdir(outdir)
 
-    params = (H_base, H_base_vals, H_base_vals, H_sign_vals, ω, f)
+    params = (H_base, H_base_vals, H_base_vals, H_sign_vals, ω, f) # the contents of `params` do not matter as they will be repalced
     prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false, save_start=false)
 
     H_buff_chnl = Channel{typeof(H_base)}(nthreads)
@@ -727,50 +728,66 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
         put!(integrator_chnl, OrdinaryDiffEq.init(prob, Tsit5()))
     end
 
-    Threads.@threads for i in eachindex(Us)
-        U = Us[i]
-
-        H_buff = take!(H_buff_chnl)
-        integrator = take!(integrator_chnl)
-        workspace = take!(worskpace_chnl)
-
-        # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving,
-        # while off-diagnoal elements will be mutated at each step
-        H_buff_vals = nonzeros(H_buff) # a view to non-zero elements
-        H_buff_vals[dind] .= U .* (-im .* E₀) # update diagonal of the Hamiltonian
-        
-        reinit!(integrator, C₀)
-        integrator.p = (H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f)
-        sol = solve!(integrator)
-
-        if sort
-            t = LAPACK.geevx!(workspace, 'N', 'N', 'V', 'N', sol[end]) # this updates `workspace`
-            e, v = t[2], t[4] # convenience views
-            sortperm!(@view(sp[:, i]), @view(v[1, :]), rev=true, by=abs2)
-            @. ε[:, i] = -ω .* angle.(e) ./ 2π
-        else
-            LAPACK.geevx!(workspace, 'N', 'N', 'N', 'N', sol[end]) # this updates `workspace`
-            @. ε[:, i] = -ω * angle(workspace.W) / 2π
-        end
-
-        if outdir != ""
-            open(joinpath(outdir, "$(i).txt"), "w") do io
-                if sort
-                    writedlm(io, vcat([U U], [ε[:, i] sp[:, i]]))
-                else
-                    writedlm(io, vcat([U], ε[:, i]))
-                end
+    if gctrick
+        @showprogress enabled=showprogress for k in 1:n_U÷nthreads
+            GC.enable(false)
+            Threads.@threads for i in (k-1)*nthreads+1:k*nthreads
+                quasienergy_step!(i, Us[i], H_buff_chnl, integrator_chnl, worskpace_chnl, dind, E₀, C₀, H_base_vals, H_sign_vals, ω, f, sp, ε, outdir, sort)
             end
+            GC.enable(true)
+            GC.gc()
         end
-        put!(H_buff_chnl, H_buff)
-        put!(integrator_chnl, integrator)
-        put!(worskpace_chnl, workspace)
+    else
+        progbar = ProgressMeter.Progress(length(Us); enabled=showprogress)
+        Threads.@threads for i in eachindex(Us)
+            quasienergy_step!(i, Us[i], H_buff_chnl, integrator_chnl, worskpace_chnl, dind, E₀, C₀, H_base_vals, H_sign_vals, ω, f, sp, ε, outdir, sort)
+            ProgressMeter.next!(progbar)
+        end
+        ProgressMeter.finish!(progbar)
     end
-        # ProgressMeter.next!(progbar)
-    # ProgressMeter.finish!(progbar)
+
     nthreads > 1 && BLAS.set_num_threads(n_blas) # restore original number of threads
 
     return ε, sp
+end
+
+"The actual calculation of the quasienergy spectrum for a single value of `U`."
+function quasienergy_step!(i, U, H_buff_chnl, integrator_chnl, worskpace_chnl, dind, E₀, C₀, H_base_vals, H_sign_vals, ω, f, sp, ε, outdir, sort)
+    H_buff = take!(H_buff_chnl)
+    integrator = take!(integrator_chnl)
+    workspace = take!(worskpace_chnl)
+
+    # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving,
+    # while off-diagnoal elements will be mutated at each step
+    H_buff_vals = nonzeros(H_buff) # a view to non-zero elements
+    H_buff_vals[dind] .= U .* (-im .* E₀) # update diagonal of the Hamiltonian
+    
+    reinit!(integrator, C₀)
+    integrator.p = (H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f)
+    sol = solve!(integrator)
+
+    if sort
+        t = LAPACK.geevx!(workspace, 'N', 'N', 'V', 'N', sol[end]) # this updates `workspace`
+        e, v = t[2], t[4] # convenience views
+        sortperm!(@view(sp[:, i]), @view(v[1, :]), rev=true, by=abs2)
+        @. ε[:, i] = -ω .* angle.(e) ./ 2π
+    else
+        LAPACK.geevx!(workspace, 'N', 'N', 'N', 'N', sol[end]) # this updates `workspace`
+        @. ε[:, i] = -ω * angle(workspace.W) / 2π
+    end
+
+    if outdir != ""
+        open(joinpath(outdir, "$(i).txt"), "w") do io
+            if sort
+                writedlm(io, vcat([U U], [ε[:, i] sp[:, i]]))
+            else
+                writedlm(io, vcat([U], ε[:, i]))
+            end
+        end
+    end
+    put!(H_buff_chnl, H_buff)
+    put!(integrator_chnl, integrator)
+    put!(worskpace_chnl, workspace)
 end
 
 "Schrödinger equation used for monodromy matrix calculation."
