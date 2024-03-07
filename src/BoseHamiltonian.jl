@@ -701,9 +701,9 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
 
     # diagonal of `H_buff` will remain equal to -𝑖𝑈 times the diagonal of `H` throughout diffeq solving,
     # while off-diagnoal elements will be mutated at each step
-    H_buff = sparse(H_rows, H_cols, H_vals) # construct the buffer
-    H_buff_vals = nonzeros(H_buff) # get a view to non-zero elements, will be used for mutating
-    H_rows, H_cols, H_base_vals = findnz(H_buff) # `H_base_vals` is a copy of values that will not be mutated
+    H_base = sparse(H_rows, H_cols, H_vals) # construct the buffer
+    # H_buff_vals = nonzeros(H_base) # get a view to non-zero elements, will be used for mutating
+    H_rows, H_cols, H_base_vals = findnz(H_base) # `H_base_vals` is a copy of values that will not be mutated
     dind = (H_rows .== H_cols)
 
     if nthreads > 1
@@ -716,30 +716,43 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
 
     # if `outdir` is given but does not exist, then create it
     (outdir != "" && !isdir(outdir)) && mkdir(outdir)
+
+    # workspace = EigenWs(C₀, rvecs=sort)
     
-    # nt = Threads.nthreads()
-    # H_buff_chnl = Channel{typeof(H_buff)}(nt)
-    # for _ in 1:nt
-    #     put!(H_buff_chnl, H_buff)
-    # end
+    # params = (H_base, H_base_vals, H_base_vals, H_sign_vals, ω, f)
+    # prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false, save_start=false)
+    # integrator = OrdinaryDiffEq.init(prob, Tsit5())
 
-    workspace = EigenWs(C₀, rvecs=sort)
+    H_buff_chnl = Channel{typeof(H_base)}(nthreads)
+    worskpace_chnl = Channel{EigenWs{Cmplx, Matrix{Cmplx}, Float}}(nthreads)
+    # integrator_chnl = Channel{typeof(OrdinaryDiffEq.init(prob, Tsit5()))}(nthreads)
+    for _ in 1:nthreads
+        put!(H_buff_chnl, copy(H_base))
+        put!(worskpace_chnl, EigenWs(C₀, rvecs=sort))
+        # prob = ODEProblem(schrodinger!, C₀, tspan, (H_buff, H_base_vals, H_base_vals, H_sign_vals, ω, f), save_everystep=false, save_start=false)
+        # put!(integrator_chnl, OrdinaryDiffEq.init(ODEProblem(schrodinger!, C₀, tspan, (H_base, H_base_vals, H_base_vals, H_sign_vals, ω, f), save_everystep=false, save_start=false), Tsit5()))
+    end
 
-    params = (H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f)
-    prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false, save_start=false)
-    integrator = OrdinaryDiffEq.init(prob, Tsit5())
-
-    # Threads.@threads for i in eachindex(Us)
-    @time for i in eachindex(Us)
+    # @time Threads.@threads for i in eachindex(Us)
+    Threads.@threads for i in eachindex(Us)
+    # for i in eachindex(Us)
         U = Us[i]
-        # H_buff = take!(H_buff_chnl)
+
+        H_buff = take!(H_buff_chnl)
+        # integrator = take!(integrator_chnl)
+        workspace = take!(worskpace_chnl)
+
         H_buff_vals = nonzeros(H_buff) # a view to non-zero elements
-        # Update diagonal of the Hamiltonian. If `H_sign_vals[i] == 0` then this `i` corresponds to a diagnoal value
+
         H_buff_vals[dind] .= U .* (-im .* E₀) # update diagonal of the Hamiltonian
         
-        integrator.p = (H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f)
-        reinit!(integrator, C₀)
-        sol = solve!(integrator)
+        # reinit!(integrator, C₀)
+        # integrator.p = (H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f)
+        # sol = solve!(integrator)
+
+        params = (H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f)
+        prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false, save_start=false)
+        sol = solve(prob, Tsit5())
 
         if sort
             t = LAPACK.geevx!(workspace, 'N', 'N', 'V', 'N', sol[end]) # this updates `workspace`
@@ -760,7 +773,9 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; nth
                 end
             end
         end
-        # put!(H_buff_chnl, H_buff)
+        put!(H_buff_chnl, H_buff)
+        # put!(integrator_chnl, integrator)
+        put!(worskpace_chnl, workspace)
     end
         # ProgressMeter.next!(progbar)
     # ProgressMeter.finish!(progbar)
