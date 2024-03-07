@@ -79,11 +79,12 @@ U = 1
 f = 2
 bh = BoseHamiltonian(lattice, J, U, f, ω)
 
-Us = range(13, 13.6, 8)
+# Us = range(13, 13.6, 200)
 Us = range(12, 15, 300)
-ε, sp = quasienergy(bh, Us, nthreads=8);
-c, p = quasienergy(bh, Us, nthreads=8)
-@code_warntype FloquetSystems.schrodinger!(c, c, p, 1) 
+@time ε, sp = quasienergy(bh, Us, nthreads=8, sort=true);
+
+# 8 threads, sort=false:  1.094874 seconds (5.70 k allocations: 164.535 MiB, 0.97% gc time)
+#            sort=true:   1.235660 seconds (6.00 k allocations: 166.532 MiB, 0.66% gc time)     
 
 gr()
 fig = scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
@@ -112,7 +113,7 @@ sp = readdlm("calcs/2x4/f5_w10_U6-8_2x4-exact-perm.txt")
 ε = ε_old[2:end, :]
 Us = ε_old[1, :]
 # isolating levels of interest
-n_isol = 200
+n_isol = 1
 E = isolate(ε, sp; n_isol)
 
 fig = scatter(Us, E', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", exact", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
@@ -204,8 +205,8 @@ using DelimitedFiles
 f = 2
 ω = 20
 r = 1//6
-spectrum_file = readdlm("calcs/2x4/f$(f)_w$(ω)_U0-30_2x4-dpt3.txt")
-sp = readdlm("calcs/2x4/f$(f)_w$(ω)_U0-30_2x4-dpt3-perm.txt")
+spectrum_file = readdlm("calcs/2x4/f$(f)_w$(ω)_U0-20_2x4-exact.txt")
+sp = readdlm("calcs/2x4/f$(f)_w$(ω)_U0-20_2x4-exact-perm.txt")
 
 Us = spectrum_file[1, :]
 spectrum = spectrum_file[2:end, :]
@@ -222,11 +223,12 @@ spec = isolate(spectrum, sp; n_isol)
 figD = scatter(Us, spec', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
 scatter!(Us, spec' .+ ω, markersize=0.5, markerstrokewidth=0, c=colour);
 scatter!(Us, spec' .- ω, markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native);
-title!(figD, L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, order = 3, rz");
+title!(figD, L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact");
 xlims!(9, 11);
 ylims!(-ω/2, ω/2)
 ylims!(-1.3, -0.8)
 
+savefig("calcs/2x4/f$(f)_w$(ω)_all_$(lattice.dims[1])x$(lattice.dims[2])-exact-$n_isol.png")
 savefig("calcs/2x4/f$(f)_w$(ω)_$(numerator(r))d$(denominator(r))_$(lattice.dims[1])x$(lattice.dims[2])-rz-dpt3-$n_isol.png")
 
 open("calcs/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[2])-dpt3.txt", "w") do io
@@ -295,3 +297,8 @@ for i in eachindex(bh.E₀)
 end
 fig0 = scatter(ε, markersize=1, markerstrokewidth=0, minorgrid=true, ylabel=L"\varepsilon/J", xlabel="level number", legend=false)
 ylims!(-5, 5)
+
+using SparseArrays
+M = sparse(rand(3,3))
+B = copy(M)
+B
