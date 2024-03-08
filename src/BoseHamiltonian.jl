@@ -642,9 +642,8 @@ end
 
 """
 Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`.
-Loop over `Us` is parallelised using all threads that julia was launched with: `nthreads=Threads.nthreads()`.
-Setting `nthreads=1` makes the loop over `Us` sequential, but the diffeq solving uses BLAS threading.
-For `nthreads > 1`, BLAS threading is turned off, but is restored to the original state upon finishing the calculation.
+Loop over `Us` is parallelised using all threads that julia was launched with.
+BLAS threading is turned off, but is restored to the original state upon finishing the calculation.
 
 If `outdir` is passed, a new directory will be created (if it does not exist) where the quasienergy spectrum at each `i`th value of `Us`
 will be output immediately after calculation. The files are named as "<i>.txt"; the first value in the file is `Us[i]`, and the following
@@ -655,6 +654,7 @@ This allows one to isolate the quasienergies of states having the largest overla
 
 For large sysems (≥8 particles), GC will cause prominent core-stopping as ODE solving allocates. 
 In that case, pass `gctrick=true` so that GC is performed manually once all threads finish an interation.
+The last `length(Us) % nthreads` values will not be calculated.
 """
 function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true, gctrick=false) where {Float<:AbstractFloat}
     (;J, f, ω, E₀) = bh
@@ -691,9 +691,17 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
     append!(H_rows, 1:nstates)
     append!(H_cols, 1:nstates)
 
-    n_U = length(Us)
-    ε = Matrix{Float}(undef, nstates, n_U)
-    sp = Matrix{Int}(undef, nstates, n_U) # sorting matrix
+    nthreads = Threads.nthreads()
+    if nthreads > 1
+        nblas = BLAS.get_num_threads() # save original number of threads to restore later
+        BLAS.set_num_threads(1)
+    end
+
+    nU = length(Us)
+    gctrick && (nU -= nU % nthreads)
+
+    ε = Matrix{Float}(undef, nstates, nU)
+    sp = Matrix{Int}(undef, nstates, nU) # sorting matrix
     C₀ = Matrix{Cmplx}(I, nstates, nstates)
     
     T = 2π / ω
@@ -706,12 +714,6 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
     H_base = sparse(H_rows, H_cols, H_vals)
     H_rows, H_cols, H_base_vals = findnz(H_base)
     dind = (H_rows .== H_cols)
-
-    nthreads = Threads.nthreads()
-    if nthreads > 1
-        n_blas = BLAS.get_num_threads() # save original number of threads to restore later
-        BLAS.set_num_threads(1)
-    end
 
     # if `outdir` is given but does not exist, then create it
     (outdir != "" && !isdir(outdir)) && mkdir(outdir)
@@ -729,7 +731,7 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
     end
 
     if gctrick
-        @showprogress enabled=showprogress for k in 1:n_U÷nthreads
+        @showprogress enabled=showprogress for k in 1:nU÷nthreads
             GC.enable(false)
             Threads.@threads for i in (k-1)*nthreads+1:k*nthreads
                 quasienergy_step!(i, Us[i], H_buff_chnl, integrator_chnl, worskpace_chnl, dind, E₀, C₀, H_base_vals, H_sign_vals, ω, f, sp, ε, outdir, sort)
@@ -746,7 +748,7 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
         ProgressMeter.finish!(progbar)
     end
 
-    nthreads > 1 && BLAS.set_num_threads(n_blas) # restore original number of threads
+    nthreads > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
 
     return ε, sp
 end
