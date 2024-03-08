@@ -6,7 +6,7 @@ import ProgressMeter
 using FLoops: @floop, @init
 import FLoops
 
-import Base.show
+import Base.show, Base.copy
 
 """
 A type representing a Bose-Hubbard Hamiltonian,
@@ -18,6 +18,8 @@ mutable struct BoseHamiltonian{Float <: AbstractFloat}
     U::Float
     f::Float # F / ω
     ω::Float
+    ωₗ::Float # lower bound of the Floquet zone; needed for DPT calculations
+    r::Rational{Int} # resonance number; needed for quick-DPT calculations
     type::Symbol # `:dpt`, `:dpt_quick`, `:diverging` or anything else for ordinary high-frequency expansion
     order::Int
     space_of_state::Vector{Tuple{Int,Int}}    # space_of_state[i] stores the subspace number (𝐴, 𝑎) of i'th state, with 𝐴 = 0 assigned to all nondegenerate space
@@ -30,9 +32,9 @@ Construct a `BoseHamiltonian` object defined on `lattice`.
 Type of `J` determines the type of Float used for all fields of the resulting object.
 `ωₗ` is the lower bound of the first Floquet zone.
 """
-function BoseHamiltonian(lattice::Lattice, J::Float, U::Real, f::Real, ω::Real, r::Rational=0//1, ωₗ::Real=0; order::Integer=1, type::Symbol=:basic) where {Float <: AbstractFloat}
+function BoseHamiltonian(lattice::Lattice, J::Float, U::Real, f::Real, ω::Real, ωₗ::Real=-ω/2, r::Rational=0//1; order::Integer=1, type::Symbol=:basic) where {Float <: AbstractFloat}
     nstates = length(lattice.basis_states)
-    E₀ = zeros(Int, length(lattice.basis_states))
+    E₀ = zeros(Int, nstates)
     for (index, state) in enumerate(lattice.basis_states)
         for n_i in state
             if (n_i > 1)
@@ -40,26 +42,9 @@ function BoseHamiltonian(lattice::Lattice, J::Float, U::Real, f::Real, ω::Real,
             end
         end
     end
-    space_of_state = if r == 0
-        Vector{Tuple{Int,Int}}()
-    else
-        map(E₀) do E
-            # rounding helps in cases such as when E*U - ωₗ = 29.999999999999996 and ÷10 gives 2 instead of 3
-            a = round(E*U - ωₗ, sigdigits=6) ÷ ω |> Int
-            A = E % denominator(r)
-            return (A, a)
-        end
-    end
-    bh = BoseHamiltonian(lattice, Float(J), Float(U), Float(f), Float(ω), type, order, space_of_state, E₀, zeros(Float, nstates, nstates))
-    if type == :dpt
-        constructH_dpt!(bh, order)
-    elseif type == :dpt_quick
-        constructH_dpt_quick!(bh, order)
-    elseif type == :diverging
-        constructH_diverging!(bh, order)
-    else
-        constructH!(bh, order)
-    end
+    space_of_state = (r == 0 ? Vector{Tuple{Int,Int}}() : Vector{Tuple{Int,Int}}(undef, nstates))
+    bh = BoseHamiltonian(lattice, Float(J), Float(U), Float(f), Float(ω), Float(ωₗ), r, type, order, space_of_state, E₀, zeros(Float, nstates, nstates))
+    update_params!(bh)
     return bh
 end
 
@@ -70,12 +55,29 @@ function Base.show(io::IO, bh::BoseHamiltonian{<:AbstractFloat})
     end
 end
 
+"Return a shallow copy of a given `BoseHamiltonian`. The result references the same `bh.lattice`."
+function Base.copy(bh::BoseHamiltonian{Float}) where {Float<:AbstractFloat}
+    # since `E₀` depends on the lattice, we are copying `bh.E₀`
+    BoseHamiltonian(bh.lattice, bh.J, bh.U, bh.f, bh.ω, bh.ωₗ, bh.r, bh.type, bh.order, similar(bh.space_of_state), copy(bh.E₀), similar(bh.H))
+end
+
 "Update parameters of `bh` and reconstruct `bh.H`."
-function update_params!(bh::BoseHamiltonian{<:AbstractFloat}; J::Real=bh.J, U::Real=bh.U, f::Real=bh.f, ω::Real=bh.ω, order::Integer=bh.order, type::Symbol=bh.type)
-    bh.J = J; bh.U = U; bh.f = f; bh.ω = ω; bh.order = order; bh.type = type
+function update_params!(bh::BoseHamiltonian{<:AbstractFloat}; J::Real=bh.J, U::Real=bh.U, f::Real=bh.f, ω::Real=bh.ω, ωₗ::Real=bh.ωₗ, r::Real=bh.r, order::Integer=bh.order, type::Symbol=bh.type)
+    bh.J = J; bh.U = U; bh.f = f; bh.ω = ω; bh.ωₗ = ωₗ; bh.r = r; bh.order = order; bh.type = type
     if type == :dpt
+        map!(bh.space_of_state, bh.E₀) do E
+            # rounding helps in cases such as when E*U - ωₗ = 29.999999999999996 and ÷10 gives 2 instead of 3
+            a = round(E*U - ωₗ, sigdigits=6) ÷ ω |> Int
+            A = E % denominator(r)
+            return (A, a)
+        end
         constructH_dpt!(bh, order)
     elseif type == :dpt_quick
+        map!(bh.space_of_state, bh.E₀) do E
+            a = round(E*r*ω - ωₗ, sigdigits=6) ÷ ω |> Int
+            A = E % denominator(r)
+            return (A, a)
+        end
         constructH_dpt_quick!(bh, order)
     elseif type == :diverging
         constructH_diverging!(bh, order)
@@ -566,37 +568,51 @@ Calculate and return the spectrum for the values of 𝑈 in `Us`, using degenera
 If `sort=true`, the second returned argument, which is the permutation matrix, will be populated.
 This allows one to isolate the quasienergies of states having the largest overlap with the ground state.
 """
-function dpt(bh0::BoseHamiltonian{Float}, r::Rational, ωₗ::Real, Us::AbstractVector{<:Real}; order::Integer, sort::Bool=false) where {Float<:AbstractFloat}
-    (;J, f, ω) = bh0
-
-    n_blas = BLAS.get_num_threads() # save original number of threads to restore later
-    BLAS.set_num_threads(1)
+function dpt(bh0::BoseHamiltonian{Float}, r::Rational, ωₗ::Real, Us::AbstractVector{<:Real}; order::Integer, sort::Bool=false, showprogress=true, gctrick=false) where {Float<:AbstractFloat}
+    nthreads = Threads.nthreads()
+    if nthreads > 1
+        nblas = BLAS.get_num_threads() # save original number of threads to restore later
+        BLAS.set_num_threads(1)
+    end
     
-    progbar = ProgressMeter.Progress(length(Us))
+    nU = length(Us)
+    progbar = ProgressMeter.Progress(nU)
 
     nstates = size(bh0.H, 1)
-    nU = length(Us)
-    sp = Matrix{Int}(undef, nstates, nU) # sorting matrix
-    
+    # gctrick && (nU -= nU % nthreads)
+
     spectrum = Matrix{Float}(undef, nstates, nU)
-    Threads.@threads for iU in eachindex(Us)
-        bh = BoseHamiltonian(bh0.lattice, J, Us[iU], f, ω, r, ωₗ; type=:dpt, order);
-        # if `Us[iU]` is such that DPT is invalid, then `bh.H` is (or is close to being) singular, so that Inf's will appear during diagonalisation.
+    sp = Matrix{Int}(undef, nstates, nU) # sorting matrix
+
+    bh_chnl = Channel{BoseHamiltonian{Float}}(nthreads)
+    worskpace_chnl = Channel{HermitianEigenWs{Float, Matrix{Float}, Float}}(nthreads)
+    for _ in 1:nthreads
+        put!(bh_chnl, copy(bh0))
+        put!(worskpace_chnl, HermitianEigenWs(bh0.H, vecs=sort))
+    end
+
+    Threads.@threads for i in eachindex(Us)
+        bh = take!(bh_chnl)
+        worskpace = take!(worskpace_chnl)
+        update_params!(bh; U=Us[i], r, ωₗ, type=:dpt, order);
+        # if `Us[i]` is such that DPT is invalid, then `bh.H` is (or is close to being) singular, so that Inf's will appear during diagonalisation.
         try
             if sort
-                spectrum[:, iU], v = eigen(Symmetric(bh.H))
-                sp[:, iU] = sortperm(abs2.(@view(v[1, :])), rev=true)
+                spectrum[:, i], v = LAPACK.syevr!(worskpace, 'N', 'A', 'U', bh.H, 0.0, 0.0, 0, 0, 1e-6)
+                sortperm!(@view(sp[:, i]), @view(v[1, :]), rev=true, by=abs2)
             else
-                spectrum[:, iU] = eigvals(Symmetric(bh.H))
+                spectrum[:, i] = LAPACK.syevr!(worskpace, 'N', 'A', 'U', bh.H, 0.0, 0.0, 0, 0, 1e-6)[1]
             end
         catch ee
-            spectrum[:, iU] .= Inf # Inf signals that calculation for a given `Us[iU]` failed
-            # we are leaving sp[:, iU] undefined if calculation failed
+            spectrum[:, i] .= Inf # Inf signals that calculation for a given `Us[i]` failed
+            # we are leaving sp[:, i] undefined if calculation failed
         end
+        put!(bh_chnl, bh)
+        put!(worskpace_chnl, worskpace)
         ProgressMeter.next!(progbar)
     end
     ProgressMeter.finish!(progbar)
-    BLAS.set_num_threads(n_blas)
+    nthreads > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
     return spectrum, sp
 end
 
