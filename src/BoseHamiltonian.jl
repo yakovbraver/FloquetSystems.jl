@@ -28,7 +28,7 @@ mutable struct BoseHamiltonian{Float <: AbstractFloat}
     ε₀::Vector{Float}  # zeroth-order quasienergy spectrum
     R1::Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float} # required for DPT-2 calculation
     R2::Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float} # required for DPT-3 calculation
-    R3::Dict{Tuple{Int,Int,Int,Int,Int,Int,Int}, Float} # required for DPT-3 calculation
+    R3::Dict{NTuple{7, Int64}, Float} # required for DPT-3 calculation
 end
 
 """
@@ -51,7 +51,7 @@ function BoseHamiltonian(lattice::Lattice, J::Float, U::Real, f::Real, ω::Real,
     ε₀ = Vector{Float}(undef, nstates)
     R1 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float}()
     R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float}()
-    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int}, Float}()
+    R3 = Dict{NTuple{7, Int64}, Float}()
     space_of_state = (type in (:dpt, :dpt_quick) ? Vector{Tuple{Int,Int}}(undef, nstates) : Vector{Tuple{Int,Int}}())
 
     bh = BoseHamiltonian(lattice, Float(J), Float(U), Float(f), Float(ω), Float(ωₗ), r, type, order, space_of_state, H, E₀, ε₀, R1, R2, R3)
@@ -384,8 +384,8 @@ function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Floa
                         s -= get_R2!(R2, U, ω, f, ΔE1, ΔE2, b-a, a-c, J_indices, J_args, true)
 
                         key = (E₀[α], E₀[β], E₀[γ], E₀[α′], i_j, k_l, m_n)
-                        if !haskey(R3, key)
-                            N = 20
+                        N = 20
+                        s += get!(R3, key) do
                             t = zero(Float)
                             for p in -N:N
                                 p == 0 && continue
@@ -399,9 +399,8 @@ function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Floa
                                             1 / 3(ε₀[α]  - ε₀[γ] - q*ω) / (ε₀[β] - ε₀[α′] + p*ω) )
                                 end
                             end
-                            R3[key] = t
+                            t
                         end
-                        s += R3[key]
                         val *= s
                         H[α′, α] += val
                     end
@@ -517,8 +516,8 @@ function constructH_dpt_quick!(bh::BoseHamiltonian{Float}, order::Integer) where
                             end
 
                             key = (E₀[α], E₀[β], E₀[γ], E₀[α′], i_j, k_l, m_n)
-                            if !haskey(R3, key)
-                                N = 20
+                            N = 20
+                            s += get!(R3, key) do
                                 t = zero(Float)
                                 for p in -N:N
                                     A == B && p == 0 && continue
@@ -531,9 +530,8 @@ function constructH_dpt_quick!(bh::BoseHamiltonian{Float}, order::Integer) where
                                             1 / 3(ε₀[α]  - ε₀[γ] - q*ω) / (ε₀[β] - ε₀[α′] + p*ω) )
                                     end
                                 end
-                                R3[key] = t
+                                t
                             end
-                            s += R3[key]
                             val *= s
                             H[α′, α] += val
                         end
@@ -553,16 +551,15 @@ end
 "Return key from the `R` dictionary; required for 2nd order DPT."
 function get_R!(R, U, ω, f, nα, d, i_j, k_l, a′, a, b, skipzero)
     key = (nα, d, i_j, k_l, a′, a, b, skipzero)
-    if !haskey(R, key)
-        N = 20
+    N = 20
+    get!(R, key) do 
         s = zero(U)
         for n in -N:N
             skipzero && n == 0 && continue
             s += 1/(U*nα - (d+n)*ω) * besselj(Int32(-(a′-b+n)), f*i_j) * besselj(Int32(a-b+n), f*k_l)
         end
-        R[key] = s
+        s
     end
-    return R[key]
 end
 
 "Return key from the `R` dictionary; required for 3rd order DPT."
@@ -570,17 +567,16 @@ function get_R2!(R, U, ω, f, ΔE1, ΔE2, d1, d2, J_indices, J_args, skipzero)
     i1, i2, i3 = J_indices
     x1, x2, x3 = J_args
     key = (ΔE1, ΔE2, d1, d2, i1, i2, i3, x1, x2, x3, skipzero)
-    if !haskey(R, key)
-        N = 20
+    N = 20
+    get!(R, key) do
         s = zero(U)
         for p in -N:N
             skipzero && p == 0 && continue
             s += 1 / (U*ΔE1 - (d1-p)*ω) / (U*ΔE2 - (d2+p)*ω) * 
                  besselj(Int32(i1), f*x1) * besselj(Int32(i2)-p, f*x2) * besselj(Int32(i3)+p, f*x3)
         end
-        R[key] = s
+        s
     end
-    return R[key]
 end
 
 """
