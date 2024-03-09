@@ -20,11 +20,15 @@ mutable struct BoseHamiltonian{Float <: AbstractFloat}
     ω::Float
     ωₗ::Float # lower bound of the Floquet zone; needed for DPT calculations
     r::Rational{Int} # resonance number; needed for quick-DPT calculations
-    type::Symbol # `:dpt`, `:dpt_quick`, `:diverging` or anything else for ordinary high-frequency expansion
-    order::Int
+    type::Symbol     # `:dpt`, `:dpt_quick`, `:diverging` or anything else for ordinary high-frequency expansion
+    order::Int  # oder of DPT
     space_of_state::Vector{Tuple{Int,Int}}    # space_of_state[i] stores the subspace number (𝐴, 𝑎) of i'th state, with 𝐴 = 0 assigned to all nondegenerate space
+    H::Matrix{Float}   # the Hamiltonian matrix
     E₀::Vector{Int}    # zeroth-order spectrum, in units of 𝑈
-    H::Matrix{Float} # the Hamiltonian matrix
+    ε₀::Vector{Float}  # zeroth-order quasienergy spectrum
+    R1::Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float} # required for DPT-2 calculation
+    R2::Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float} # required for DPT-3 calculation
+    R3::Dict{Tuple{Int,Int,Int,Int,Int,Int,Int}, Float} # required for DPT-3 calculation
 end
 
 """
@@ -34,6 +38,7 @@ Type of `J` determines the type of Float used for all fields of the resulting ob
 """
 function BoseHamiltonian(lattice::Lattice, J::Float, U::Real, f::Real, ω::Real, ωₗ::Real=-ω/2, r::Rational=0//1; order::Integer=1, type::Symbol=:basic) where {Float <: AbstractFloat}
     nstates = length(lattice.basis_states)
+    # Calculate zeroth-order spectrum, in units of 𝑈. It only depends on the lattice, so will not change
     E₀ = zeros(Int, nstates)
     for (index, state) in enumerate(lattice.basis_states)
         for n_i in state
@@ -42,9 +47,16 @@ function BoseHamiltonian(lattice::Lattice, J::Float, U::Real, f::Real, ω::Real,
             end
         end
     end
-    space_of_state = (r == 0 ? Vector{Tuple{Int,Int}}() : Vector{Tuple{Int,Int}}(undef, nstates))
-    bh = BoseHamiltonian(lattice, Float(J), Float(U), Float(f), Float(ω), Float(ωₗ), r, type, order, space_of_state, E₀, zeros(Float, nstates, nstates))
+    H = Matrix{Float}(undef, nstates, nstates)
+    ε₀ = Vector{Float}(undef, nstates)
+    R1 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float}()
+    R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float}()
+    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int}, Float}()
+    space_of_state = (type in (:dpt, :dpt_quick) ? Vector{Tuple{Int,Int}}(undef, nstates) : Vector{Tuple{Int,Int}}())
+
+    bh = BoseHamiltonian(lattice, Float(J), Float(U), Float(f), Float(ω), Float(ωₗ), r, type, order, space_of_state, H, E₀, ε₀, R1, R2, R3)
     update_params!(bh)
+
     return bh
 end
 
@@ -55,10 +67,14 @@ function Base.show(io::IO, bh::BoseHamiltonian{<:AbstractFloat})
     end
 end
 
-"Return a shallow copy of a given `BoseHamiltonian`. The result references the same `bh.lattice`."
+"""
+Return a shallow copy of a given `BoseHamiltonian`: copy all scalar fields; reference the same `bh.lattice` and hence copy `bh.E₀`;
+make similar `bh.ε₀`; make empty copies of `bh.R*` so that they are not populated in the resulting object but are of the same allocated size (think `sizehint`).
+"""
 function Base.copy(bh::BoseHamiltonian{Float}) where {Float<:AbstractFloat}
     # since `E₀` depends on the lattice, we are copying `bh.E₀`
-    BoseHamiltonian(bh.lattice, bh.J, bh.U, bh.f, bh.ω, bh.ωₗ, bh.r, bh.type, bh.order, similar(bh.space_of_state), copy(bh.E₀), similar(bh.H))
+    BoseHamiltonian(bh.lattice, bh.J, bh.U, bh.f, bh.ω, bh.ωₗ, bh.r, bh.type, bh.order, similar(bh.space_of_state), similar(bh.H),
+        copy(bh.E₀), similar(bh.ε₀), empty(bh.R1), empty(bh.R2), empty(bh.R3))
 end
 
 "Update parameters of `bh` and reconstruct `bh.H`."
@@ -71,12 +87,18 @@ function update_params!(bh::BoseHamiltonian{<:AbstractFloat}; J::Real=bh.J, U::R
             A = E % denominator(r)
             return (A, a)
         end
+        for i in eachindex(bh.E₀)
+            bh.ε₀[i] = bh.E₀[i]*U - bh.space_of_state[i][2]*ω
+        end
         constructH_dpt!(bh, order)
     elseif type == :dpt_quick
         map!(bh.space_of_state, bh.E₀) do E
             a = round(E*r*ω - ωₗ, sigdigits=6) ÷ ω |> Int
             A = E % denominator(r)
             return (A, a)
+        end
+        for i in eachindex(bh.E₀)
+            bh.ε₀[i] = bh.E₀[i]*U - bh.space_of_state[i][2]*ω
         end
         constructH_dpt_quick!(bh, order)
     elseif type == :diverging
@@ -264,18 +286,13 @@ end
 "Construct the Hamiltonian matrix."
 function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Float<:AbstractFloat}
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
-    (;J, U, f, ω, E₀, space_of_state, H) = bh
-    
-    ε = Vector{Float}(undef, length(E₀)) # energies (including 𝑈 multiplier) reduced to first Floquet zone
-    for i in eachindex(E₀)
-        ε[i] = E₀[i]*U - space_of_state[i][2]*ω
-    end
-    H .= 0
-    H[diagind(H)] .= ε
+    (;J, U, f, ω, E₀, ε₀, space_of_state, H, R1, R2, R3) = bh
 
-    R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float}()
-    R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float}()
-    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int}, Float}()
+    H .= 0
+    H[diagind(H)] .= ε₀
+
+    empty!(R1); empty!(R2); empty!(R3);
+
     bra = similar(bh.lattice.basis_states[1])
     # take each basis state and find which transitions are possible
     for (ket, α) in index_of_state
@@ -312,8 +329,8 @@ function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Floa
                             α′ = index_of_state[bra]
                             A′, a′ = space_of_state[α′]
                             val *= √bra[i]
-                            val *= (get_R!(R, U, ω, f, bra[i]-bra[j]-1, a′-b, i_j, k_l, a′, a, b, true) +
-                                    get_R!(R, U, ω, f, ket[l]-ket[k]-1, a-b, i_j, k_l, a′, a, b, true))
+                            val *= (get_R!(R1, U, ω, f, bra[i]-bra[j]-1, a′-b, i_j, k_l, a′, a, b, true) +
+                                    get_R!(R1, U, ω, f, ket[l]-ket[k]-1, a-b, i_j, k_l, a′, a, b, true))
                             H[α′, α] += val
                         end
                     end
@@ -366,13 +383,17 @@ function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Floa
                         if !haskey(R3, key)
                             N = 20
                             t = zero(Float)
-                            for p in [-N:-1; 1:N], q in [-N:-1; 1:N]
-                                q == p && continue
-                                t += besselj(b-a′-p, f*i_j) * besselj(c-b+p-q, f*k_l) * besselj(a-c+q, f*m_n) * (
-                                        1 / 2(ε[α′] - ε[γ] - q*ω)     * (1/(ε[γ] - ε[β]  - (p-q)*ω) - 1/(ε[β] - ε[α′] + p*ω)) +
-                                        1 / 2(ε[α]  - ε[β] - p*ω)     * (1/(ε[α] - ε[γ]  - q*ω)     - 1/(ε[γ] - ε[β]  - (p-q)*ω)) +
-                                        1 / 6(ε[γ]  - ε[β] - (p-q)*ω) * (1/(ε[β] - ε[α′] + p*ω)     + 1/(ε[α] - ε[γ]  - q*ω)) -
-                                        1 / 3(ε[α]  - ε[γ] - q*ω) / (ε[β] - ε[α′] + p*ω) )
+                            for p in -N:N
+                                p == 0 && continue
+                                for q in -N:N
+                                    (q == 0 || q == p) && continue
+                                    # cast to Int32 as otherwise multiplication of three `besselj`s leads to allocations if `typeof(f) == Float32`
+                                    t += besselj(Int32(b-a′-p), f*i_j) * besselj(Int32(c-b+p-q), f*k_l) * besselj(Int32(a-c+q), f*m_n) * (
+                                            1 / 2(ε₀[α′] - ε₀[γ] - q*ω)     * (1/(ε₀[γ] - ε₀[β]  - (p-q)*ω) - 1/(ε₀[β] - ε₀[α′] + p*ω)) +
+                                            1 / 2(ε₀[α]  - ε₀[β] - p*ω)     * (1/(ε₀[α] - ε₀[γ]  - q*ω)     - 1/(ε₀[γ] - ε₀[β]  - (p-q)*ω)) +
+                                            1 / 6(ε₀[γ]  - ε₀[β] - (p-q)*ω) * (1/(ε₀[β] - ε₀[α′] + p*ω)     + 1/(ε₀[α] - ε₀[γ]  - q*ω)) -
+                                            1 / 3(ε₀[α]  - ε₀[γ] - q*ω) / (ε₀[β] - ε₀[α′] + p*ω) )
+                                end
                             end
                             R3[key] = t
                         end
@@ -389,19 +410,14 @@ end
 "Construct the Hamiltonian matrix."
 function constructH_dpt_quick!(bh::BoseHamiltonian{Float}, order::Integer) where {Float<:AbstractFloat}
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
-    (;J, U, f, ω, E₀, space_of_state, H) = bh
+    (;J, U, f, ω, E₀, ε₀, space_of_state, H, R1, R2, R3) = bh
 
-    ε = Vector{Float}(undef, length(E₀)) # energies (including 𝑈 multiplier) reduced to first Floquet zone
-    for i in eachindex(E₀)
-        ε[i] = E₀[i]*U - space_of_state[i][2]*ω
-    end
     H .= 0
-    H[diagind(H)] .= ε
+    H[diagind(H)] .= ε₀
 
-    R = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float}()
-    R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float}()
-    R3 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int}, Float}()
+    empty!(R1); empty!(R2); empty!(R3);
     
+    bra = similar(bh.lattice.basis_states[1])
     # take each basis state and find which transitions are possible
     for (ket, α) in index_of_state
         A, a = space_of_state[α]
@@ -409,7 +425,7 @@ function constructH_dpt_quick!(bh::BoseHamiltonian{Float}, order::Integer) where
             # 1st order
             for (j, i_j) in neis_of_cell[i]
                 if (ket[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
-                    bra = copy(ket)
+                    copy!(bra, ket)
                     bra[j] -= 1
                     bra[i] += 1
                     α′ = index_of_state[bra]
@@ -427,7 +443,7 @@ function constructH_dpt_quick!(bh::BoseHamiltonian{Float}, order::Integer) where
                         # 𝑎†ᵢ 𝑎ⱼ 𝑎†ₖ 𝑎ₗ
                         if ( ket[l] > 0 && (j == k || (j == l && ket[j] > 1) || (j != l && ket[j] > 0)) )
                             val = +J^2/2
-                            bra = copy(ket)
+                            copy!(bra, ket)
                             val *= √bra[l]
                             bra[l] -= 1
                             bra[k] += 1
@@ -441,8 +457,8 @@ function constructH_dpt_quick!(bh::BoseHamiltonian{Float}, order::Integer) where
                             if A′ == A # proceed only if bra is in the same degenerate space
                                 val *= √bra[i]
                                 skipzero = (B == A)
-                                val *= (get_R!(R, U, ω, f, bra[i]-bra[j]-1, a′-b, i_j, k_l, a′, a, b, skipzero) +
-                                        get_R!(R, U, ω, f, ket[l]-ket[k]-1, a-b, i_j, k_l, a′, a, b, skipzero))
+                                val *= (get_R!(R1, U, ω, f, bra[i]-bra[j]-1, a′-b, i_j, k_l, a′, a, b, skipzero) +
+                                        get_R!(R1, U, ω, f, ket[l]-ket[k]-1, a-b, i_j, k_l, a′, a, b, skipzero))
                                 H[α′, α] += val
                             end
                         end
@@ -455,7 +471,7 @@ function constructH_dpt_quick!(bh::BoseHamiltonian{Float}, order::Integer) where
                     for k = 1:ncells, (l, k_l) in neis_of_cell[k], m = 1:ncells, (n, m_n) in neis_of_cell[m]
                         # 𝑎†ᵢ 𝑎ⱼ 𝑎†ₖ 𝑎ₗ 𝑎†ₘ 𝑎ₙ
                         ket[n] == 0 && continue
-                        bra = copy(ket)
+                        copy!(bra, ket)
                         val = -J^3/2
                         val *= √bra[n]; bra[n] -= 1; bra[m] += 1; val *= √bra[m]
                         bra[l] == 0 && continue
@@ -500,15 +516,16 @@ function constructH_dpt_quick!(bh::BoseHamiltonian{Float}, order::Integer) where
                             if !haskey(R3, key)
                                 N = 20
                                 t = zero(Float)
-                                prange = A == B ? [-N:-1; 1:N] : collect(-N:N)
-                                qrange = A == C ? [-N:-1; 1:N] : collect(-N:N)
-                                for p in prange, q in qrange
-                                    B == C && q == p && continue
-                                    t += besselj(b-a′-p, f*i_j) * besselj(c-b+p-q, f*k_l) * besselj(a-c+q, f*m_n) * (
-                                         1 / 2(ε[α′] - ε[γ] - q*ω)     * (1/(ε[γ] - ε[β]  - (p-q)*ω) - 1/(ε[β] - ε[α′] + p*ω)) +
-                                         1 / 2(ε[α]  - ε[β] - p*ω)     * (1/(ε[α] - ε[γ]  - q*ω)     - 1/(ε[γ] - ε[β]  - (p-q)*ω)) +
-                                         1 / 6(ε[γ]  - ε[β] - (p-q)*ω) * (1/(ε[β] - ε[α′] + p*ω)     + 1/(ε[α] - ε[γ]  - q*ω)) -
-                                         1 / 3(ε[α]  - ε[γ] - q*ω) / (ε[β] - ε[α′] + p*ω) )
+                                for p in -N:N
+                                    A == B && p == 0 && continue
+                                    for q in -N:N
+                                        (A == C && q == 0) || (B == C && q == p) && continue
+                                        t += besselj(Int32(b-a′-p), f*i_j) * besselj(Int32(c-b+p-q), f*k_l) * besselj(Int32(a-c+q), f*m_n) * (
+                                            1 / 2(ε₀[α′] - ε₀[γ] - q*ω)     * (1/(ε₀[γ] - ε₀[β]  - (p-q)*ω) - 1/(ε₀[β] - ε₀[α′] + p*ω)) +
+                                            1 / 2(ε₀[α]  - ε₀[β] - p*ω)     * (1/(ε₀[α] - ε₀[γ]  - q*ω)     - 1/(ε₀[γ] - ε₀[β]  - (p-q)*ω)) +
+                                            1 / 6(ε₀[γ]  - ε₀[β] - (p-q)*ω) * (1/(ε₀[β] - ε₀[α′] + p*ω)     + 1/(ε₀[α] - ε₀[γ]  - q*ω)) -
+                                            1 / 3(ε₀[α]  - ε₀[γ] - q*ω) / (ε₀[β] - ε₀[α′] + p*ω) )
+                                    end
                                 end
                                 R3[key] = t
                             end
@@ -535,9 +552,9 @@ function get_R!(R, U, ω, f, nα, d, i_j, k_l, a′, a, b, skipzero)
     if !haskey(R, key)
         N = 20
         s = zero(U)
-        nrange = skipzero ? [-N:-1; 1:N] : collect(-N:N)
-        for n in nrange
-            s += 1/(U*nα - (d+n)*ω) * besselj(-(a′-b+n), f*i_j) * besselj(a-b+n, f*k_l)
+        for n in -N:N
+            skipzero && n == 0 && continue
+            s += 1/(U*nα - (d+n)*ω) * besselj(Int32(-(a′-b+n)), f*i_j) * besselj(Int32(a-b+n), f*k_l)
         end
         R[key] = s
     end
@@ -552,9 +569,10 @@ function get_R2!(R, U, ω, f, ΔE1, ΔE2, d1, d2, J_indices, J_args, skipzero)
     if !haskey(R, key)
         N = 20
         s = zero(U)
-        prange = skipzero ? [-N:-1; 1:N] : collect(-N:N)
-        for p in prange
-            s += 1 / (U*ΔE1 - (d1-p)*ω) / (U*ΔE2 - (d2+p)*ω) * besselj(i1, f*x1) * besselj(i2-p, f*x2) * besselj(i3+p, f*x3)
+        for p in -N:N
+            skipzero && p == 0 && continue
+            s += 1 / (U*ΔE1 - (d1-p)*ω) / (U*ΔE2 - (d2+p)*ω) * 
+                 besselj(Int32(i1), f*x1) * besselj(Int32(i2)-p, f*x2) * besselj(Int32(i3)+p, f*x3)
         end
         R[key] = s
     end
