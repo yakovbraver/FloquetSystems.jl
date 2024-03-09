@@ -614,7 +614,7 @@ function dpt(bh0::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; sort::Bool
         # if `Us[i]` is such that DPT is invalid, then `bh.H` is (or is close to being) singular, so that Inf's will appear during diagonalisation.
         try
             if sort
-                spectrum[:, i], v = LAPACK.syevr!(worskpace, 'N', 'A', 'U', bh.H, 0.0, 0.0, 0, 0, 1e-6)
+                spectrum[:, i], v = LAPACK.syevr!(worskpace, 'V', 'A', 'U', bh.H, 0.0, 0.0, 0, 0, 1e-6)
                 sortperm!(@view(sp[:, i]), @view(v[1, :]), rev=true, by=abs2)
             else
                 spectrum[:, i] = LAPACK.syevr!(worskpace, 'N', 'A', 'U', bh.H, 0.0, 0.0, 0, 0, 1e-6)[1]
