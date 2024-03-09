@@ -73,8 +73,12 @@ make similar `bh.ε₀`; make empty copies of `bh.R*` so that they are not popul
 """
 function Base.copy(bh::BoseHamiltonian{Float}) where {Float<:AbstractFloat}
     # since `E₀` depends on the lattice, we are copying `bh.E₀`
-    BoseHamiltonian(bh.lattice, bh.J, bh.U, bh.f, bh.ω, bh.ωₗ, bh.r, bh.type, bh.order, similar(bh.space_of_state), similar(bh.H),
+    b = BoseHamiltonian(bh.lattice, bh.J, bh.U, bh.f, bh.ω, bh.ωₗ, bh.r, bh.type, bh.order, similar(bh.space_of_state), similar(bh.H),
         copy(bh.E₀), similar(bh.ε₀), empty(bh.R1), empty(bh.R2), empty(bh.R3))
+    sizehint!(b.R1, length(bh.R1)) 
+    sizehint!(b.R2, length(bh.R2)) 
+    sizehint!(b.R3, length(bh.R3))
+    return b 
 end
 
 "Update parameters of `bh` and reconstruct `bh.H`."
@@ -581,24 +585,21 @@ end
 
 """
 Calculate and return the spectrum for the values of 𝑈 in `Us`, using degenerate theory.
-`bh` is used as a parameter holder, but `bh.U`, `bh.type`, and `bh.order` do not matter --- function arguments are used instead.
+Calculation is based on the parameters in `bh`, including `bh.type` and `bh.order`
 
 If `sort=true`, the second returned argument, which is the permutation matrix, will be populated.
 This allows one to isolate the quasienergies of states having the largest overlap with the ground state.
 """
-function dpt(bh0::BoseHamiltonian{Float}, r::Rational, ωₗ::Real, Us::AbstractVector{<:Real}; order::Integer, sort::Bool=false, showprogress=true, gctrick=false) where {Float<:AbstractFloat}
+function dpt(bh0::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; sort::Bool=false, showprogress=true) where {Float<:AbstractFloat}
     nthreads = Threads.nthreads()
     if nthreads > 1
         nblas = BLAS.get_num_threads() # save original number of threads to restore later
         BLAS.set_num_threads(1)
     end
+        
+    nstates = size(bh0.H, 1)
     
     nU = length(Us)
-    progbar = ProgressMeter.Progress(nU)
-
-    nstates = size(bh0.H, 1)
-    # gctrick && (nU -= nU % nthreads)
-
     spectrum = Matrix{Float}(undef, nstates, nU)
     sp = Matrix{Int}(undef, nstates, nU) # sorting matrix
 
@@ -609,10 +610,11 @@ function dpt(bh0::BoseHamiltonian{Float}, r::Rational, ωₗ::Real, Us::Abstract
         put!(worskpace_chnl, HermitianEigenWs(bh0.H, vecs=sort))
     end
 
+    progbar = ProgressMeter.Progress(nU; enabled=showprogress)
     Threads.@threads for i in eachindex(Us)
         bh = take!(bh_chnl)
         worskpace = take!(worskpace_chnl)
-        update_params!(bh; U=Us[i], r, ωₗ, type=:dpt, order);
+        update_params!(bh; U=Us[i])
         # if `Us[i]` is such that DPT is invalid, then `bh.H` is (or is close to being) singular, so that Inf's will appear during diagonalisation.
         try
             if sort
