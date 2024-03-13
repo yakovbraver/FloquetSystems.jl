@@ -9,6 +9,7 @@ export Lattice,
     dpt,
     dpt_quick,
     quasienergy,
-    quasienergy_dense
+    quasienergy_dense,
+    residuals!
 
 end

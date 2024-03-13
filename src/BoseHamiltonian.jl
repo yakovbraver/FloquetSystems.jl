@@ -673,6 +673,47 @@ function dpt_quick(bh0::BoseHamiltonian{Float}, r::Rational, ωₗ::Real, Us::Ab
 end
 
 """
+Analyse residual couplings with states outside the FZ.
+The passed `bh` has to be initialised with the required ωₗ defining the FZ.
+Take a state |0α⟩⟩ together with the state |𝑛α′⟩⟩ which it is coupled to in first order. Scan 𝑛 to find the strongest coupling ratio defined as
+<coupling strength> / <energy distance>. Save this ratio to the correponding elements `bh.H[α′, α]`. Repeat for all (α, α′) pairs.
+Additionally, return a matrix `W` showing the subspace numbers 𝑎′ of |α′⟩: `W[α′, α] = 𝑎′`.
+"""
+function residuals!(bh::BoseHamiltonian{Float}) where {Float<:AbstractFloat}
+    (;index_of_state, ncells, neis_of_cell) = bh.lattice
+    (;J, f, ω, ε₀, space_of_state, H) = bh
+
+    H .= 0
+    W = zeros(Int, size(H))
+
+    bra = similar(bh.lattice.basis_states[1])
+    # take each basis state and find which transitions are possible
+    for (ket, α) in index_of_state
+        _, a = space_of_state[α]
+        for i = 1:ncells # iterate over the terms of the Hamiltonian
+            for (j, _) in neis_of_cell[i]
+                if (ket[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
+                    copy!(bra, ket)
+                    bra[j] -= 1
+                    bra[i] += 1
+                    α′ = index_of_state[bra]
+                    _, a′ = space_of_state[α′]
+                    r_max, n_max = 0.0, 0
+                    for n in -2:2 # large values of `n` are likely to lead to low ratios because of large energy distance
+                        n == 0 && continue # skip levels inside the FZ
+                        r = besselj(a - (a′ + n), f) / (ε₀[α] - (ε₀[α′] - n*ω)) |> abs # `n`s are with different signs because adding `n` to subspace number means subtracting `nω` from the energy
+                        r > r_max && (r_max = r; n_max = a′ + n)
+                    end
+                    H[α′, α] = J * r_max * sqrt( (ket[i]+1) * ket[j] )
+                    W[α′, α] = n_max
+                end
+            end
+        end
+    end
+    return W
+end
+
+"""
 Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`.
 Loop over `Us` is parallelised using all threads that julia was launched with.
 BLAS threading is turned off, but is restored to the original state upon finishing the calculation.
