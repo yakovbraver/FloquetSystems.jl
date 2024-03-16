@@ -25,7 +25,7 @@ end
 "Return `n_isol` levels of `ε` using the permutation matrix `sp`."
 function isolate(ε, sp; n_isol)
     E = Matrix{eltype(ε)}(undef, n_isol, size(ε, 2))
-    for i in eachindex(Us)
+    for i in axes(E, 2)
         E[:, i] = ε[Int.(sp[1:n_isol, i]), i]
     end
     return E
@@ -200,12 +200,12 @@ plot!(xlims=(U₀-1, U₀+1), ylims=(-2, 2), title="isolated")
 savefig("f$(f)_w$(ω)_$(numerator(r))d$(denominator(r))_$(lattice.dims[1])x$(lattice.dims[2])-dpt3-$n_isol.png")
 
 using DelimitedFiles
-f = 2
-ω = 20
+f = 2.0
+ω = 30.0
 r = 4//3
 lattice = Lattice(;dims=(2, 4), isperiodic=true)
-spectrum_file = readdlm("calcs/2x4/f$(f)_w$(ω)_U0-30_2x4-dpt3.txt")
-sp = readdlm("calcs/2x4/f$(f)_w$(ω)_U0-30_2x4-dpt3-perm.txt")
+spectrum_file = readdlm("calcs/2x4/f$(f)_w$(ω)_U38.5-41.0_2x4-exact.txt")
+sp = readdlm("calcs/2x4/f$(f)_w$(ω)_U38.5-41.0_2x4-exact-perm.txt")
 
 Us = spectrum_file[1, :]
 spectrum = spectrum_file[2:end, :]
@@ -216,7 +216,7 @@ spectrum = spectrum[:, mask]
 sp = sp[:, mask]
 Us = Us[mask]
 
-n_isol = 10
+n_isol = 100
 spec = isolate(spectrum, sp; n_isol)
 
 figD = scatter(Us, spec', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
@@ -237,18 +237,46 @@ open("calcs/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[
     writedlm(io, sp)
 end
 
-################ Analyse redisual couplings
+################ Analyse residual couplings
 J = 1.0f0
 f = 2
-ω = 20
+ω = 30
 ωₗ = -ω/2
-r = 2//3
+r = 1//1
 U₀ = float(ω) * r
-lattice = Lattice(;dims=(1, 6), isperiodic=true)
+lattice = Lattice(;dims=(2, 4), isperiodic=true)
 bh = BoseHamiltonian(lattice, J, U₀, f, ω, ωₗ, r, type=:dpt, order=1);
 
 W = residuals!(bh)
+m, i = findmax(bh.H)
+W[i]
+
+ra = 1
+ra = [478:1037; 1108:1275]
+ra = [3236:3655; 3824:4103]
+ra = 5112:5447
+ra = 5448:5475
+
+maximum(bh.H[:, ra])
+ar = argmax(bh.H[:, ra])
+W[ar[1], ra[ar[2]]]
+
+α = 1
+A, a = bh.space_of_state[α]
+α′ = 5
+_, a′ = bh.space_of_state[α′]
+
+n = -2
+besselj(a - (a′ + n), f)
+(bh.ε₀[α] - (bh.ε₀[α′] - n*ω))
+
+n = -1
+besselj(a - (a′ + n), f)
+(bh.ε₀[α] - (bh.ε₀[α′] - n*ω))
+
 theme(:dark, size=(1600, 600))
 f1 = heatmap(bh.H, yaxis=:flip, c=:viridis);
 f2 = heatmap(W, yaxis=:flip, c=:viridis);
 plot(f1, f2, link=:both)
+
+scatter(bh.E₀, markerstrokewidth=0, markersize=1, legend=false)
