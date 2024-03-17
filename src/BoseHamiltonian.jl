@@ -729,7 +729,8 @@ For large sysems (≥8 particles), GC will cause prominent core-stopping as ODE 
 In that case, pass `gctrick=true` so that GC is performed manually once all threads finish an interation.
 The last `length(Us) % nthreads` values will not be calculated.
 """
-function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true, gctrick=false) where {Float<:AbstractFloat}
+function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}, outdir::String="", sort::Bool=false, showprogress=true, gctrick=false, pidshift=-1) where {Float<:AbstractFloat}
+# function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true, gctrick=false, pidshift=-1) where {Float<:AbstractFloat}
     (;J, f, ω, E₀) = bh
     Cmplx = (Float == Float32 ? ComplexF32 : ComplexF64)
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
@@ -773,8 +774,6 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
     nU = length(Us)
     gctrick && (nU -= nU % nthreads)
 
-    ε = Matrix{Float}(undef, nstates, nU)
-    sp = Matrix{Int}(undef, nstates, nU) # sorting matrix
     C₀ = Matrix{Cmplx}(I, nstates, nstates)
     
     T = 2π / ω
@@ -794,36 +793,76 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
     params = (H_base, H_base_vals, H_base_vals, H_sign_vals, ω, f) # the contents of `params` do not matter as they will be repalced
     prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false, save_start=false)
 
-    H_buff_chnl = Channel{typeof(H_base)}(nthreads)
-    worskpace_chnl = Channel{EigenWs{Cmplx, Matrix{Cmplx}, Float}}(nthreads)
-    integrator_chnl = Channel{typeof(OrdinaryDiffEq.init(prob, Tsit5()))}(nthreads)
-    for _ in 1:nthreads
-        put!(H_buff_chnl, copy(H_base))
-        put!(worskpace_chnl, EigenWs(C₀, rvecs=sort))
-        put!(integrator_chnl, OrdinaryDiffEq.init(prob, Tsit5()))
-    end
+    if pidshift > -1
+        ε1 = Vector{Float}(undef, nstates)
+        sp1 = Vector{Int}(undef, nstates) # sorting matrix
 
-    if gctrick
-        @showprogress enabled=showprogress for k in 1:nU÷nthreads
-            GC.enable(false)
-            Threads.@threads for i in (k-1)*nthreads+1:k*nthreads
-                quasienergy_step!(i, Us[i], H_buff_chnl, integrator_chnl, worskpace_chnl, dind, E₀, C₀, H_base_vals, H_sign_vals, ω, f, sp, ε, outdir, sort)
+        # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving,
+        # while off-diagnoal elements will be mutated at each step
+        H_buff = copy(H_base)
+        H_buff_vals = nonzeros(H_buff) # a view to non-zero elements
+
+        integrator = OrdinaryDiffEq.init(prob, Tsit5())
+        workspace = EigenWs(C₀, rvecs=sort)
+        for (i, U) in enumerate(Us)
+            H_buff_vals[dind] .= Us[i] .* (-im .* E₀) # update diagonal of the Hamiltonian
+            
+            reinit!(integrator, C₀)
+            integrator.p = (H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f)
+            sol = solve!(integrator)
+
+            if sort
+                t = LAPACK.geevx!(workspace, 'N', 'N', 'V', 'N', sol[end]) # this updates `workspace`
+                e, v = t[2], t[4] # convenience views
+                sortperm!(sp1, @view(v[1, :]), rev=true, by=abs2)
+                @. ε1 = -ω .* angle.(e) ./ 2π
+            else
+                LAPACK.geevx!(workspace, 'N', 'N', 'N', 'N', sol[end]) # this updates `workspace`
+                @. ε1 = -ω * angle(workspace.W) / 2π
             end
-            GC.enable(true)
-            GC.gc()
+
+            open(joinpath(outdir, "$(pidshift+i).txt"), "w") do io
+                if sort
+                    writedlm(io, vcat([U U], [ε1 sp1]))
+                else
+                    writedlm(io, vcat([U], ε1))
+                end
+            end
         end
     else
-        progbar = ProgressMeter.Progress(length(Us); enabled=showprogress)
-        Threads.@threads for i in eachindex(Us)
-            quasienergy_step!(i, Us[i], H_buff_chnl, integrator_chnl, worskpace_chnl, dind, E₀, C₀, H_base_vals, H_sign_vals, ω, f, sp, ε, outdir, sort)
-            ProgressMeter.next!(progbar)
+        ε = Matrix{Float}(undef, nstates, nU)
+        sp = Matrix{Int}(undef, nstates, nU) # sorting matrix
+
+        H_buff_chnl = Channel{typeof(H_base)}(nthreads)
+        worskpace_chnl = Channel{EigenWs{Cmplx, Matrix{Cmplx}, Float}}(nthreads)
+        integrator_chnl = Channel{typeof(OrdinaryDiffEq.init(prob, Tsit5()))}(nthreads)
+        for _ in 1:nthreads
+            put!(H_buff_chnl, copy(H_base))
+            put!(worskpace_chnl, EigenWs(C₀, rvecs=sort))
+            put!(integrator_chnl, OrdinaryDiffEq.init(prob, Tsit5()))
         end
-        ProgressMeter.finish!(progbar)
+
+        if gctrick
+            @showprogress enabled=showprogress for k in 1:nU÷nthreads
+                GC.enable(false)
+                Threads.@threads for i in (k-1)*nthreads+1:k*nthreads
+                    quasienergy_step!(i, Us[i], H_buff_chnl, integrator_chnl, worskpace_chnl, dind, E₀, C₀, H_base_vals, H_sign_vals, ω, f, sp, ε, outdir, sort)
+                end
+                GC.enable(true)
+                GC.gc()
+            end
+        else
+            progbar = ProgressMeter.Progress(length(Us); enabled=showprogress)
+            Threads.@threads for i in eachindex(Us)
+                quasienergy_step!(i, Us[i], H_buff_chnl, integrator_chnl, worskpace_chnl, dind, E₀, C₀, H_base_vals, H_sign_vals, ω, f, sp, ε, outdir, sort)
+                ProgressMeter.next!(progbar)
+            end
+            ProgressMeter.finish!(progbar)
+        end
+        nthreads > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
+        return ε, sp
     end
 
-    nthreads > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
-
-    return ε, sp
 end
 
 "The actual calculation of the quasienergy spectrum for a single value of `U`."

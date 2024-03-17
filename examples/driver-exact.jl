@@ -1,34 +1,31 @@
 # A driving script for autonomous (non-interactive) calculation. Launch as e.g.
-#   $ julia --project --check-bounds=no -t 21 -e 'include("examples/driver.jl")' -- f ω Umin Umax N
-using FloquetSystems, ThreadPinning, DelimitedFiles
-pinthreads(:cores)
+#   $ julia --project --check-bounds=no -t 1 -e 'include("examples/driver.jl")' -- f ω Umin Umax N nprocs pid
+# where `N` is the number of Us to scan, `nprocs` is the total number of processes among which work is split, and `pid` is the ID of the current process, starting from 1
+using FloquetSystems, LinearAlgebra, DelimitedFiles
+
+BLAS.set_num_threads(1)
+
+f, ω, Umin, Umax = parse.(Float32, ARGS[1:4])
+N, nprocs, pid = parse.(Int, ARGS[5:7])
+
+# using ThreadPinning
+# pinthreads([pid])
+
+nU = N ÷ nprocs # number of Us the current process should scan
+pidshift = (pid-1) * nU
+Us = range(Umin, Umax, N)[pidshift+1:pidshift+nU]
 
 J = 1.0f0
 U = 1
 
-f, ω, Umin, Umax = parse.(Float32, ARGS[1:4])
-N = parse.(Int, ARGS[5])
-
-Us = range(Umin, Umax, N)
-
 # warm up
 lattice = Lattice(;dims=(1, 5), isperiodic=true)
 bh = BoseHamiltonian(lattice, J, U, f, ω)
-outdir = "2x4/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[2])-exact"
-quasienergy(bh, Us; showprogress=false, gctrick=true, sort=true, outdir);
-rm(outdir, recursive=true) # we don't need those file, but the `outdir` argument was used to compile the function
+outdir = "f$(f)_w$(ω)_U$(Umin)-$(Umax)_$(lattice.dims[1])x$(lattice.dims[2])-exact"
+quasienergy(bh, Us; showprogress=false, sort=true, pidshift, outdir);
 
 # actual calculation
-lattice = Lattice(;dims=(2, 4), isperiodic=true)
-outdir = "2x4/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[2])-exact"
+lattice = Lattice(;dims=(1, 6), isperiodic=true)
+outdir = "f$(f)_w$(ω)_U$(Umin)-$(Umax)_$(lattice.dims[1])x$(lattice.dims[2])-exact"
 bh = BoseHamiltonian(lattice, J, U, f, ω)
-GC.gc()
-ε, sp = quasienergy(bh, Us; showprogress=false, gctrick=true, sort=true, outdir);
-
-open(outdir*".txt", "w") do io
-    writedlm(io, vcat(Us', ε))
-end
-
-open(outdir*"-perm.txt", "w") do io
-    writedlm(io, sp)
-end
+quasienergy(bh, Us; showprogress=false, sort=true, pidshift, outdir);
