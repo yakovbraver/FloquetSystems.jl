@@ -9,11 +9,10 @@ f, ω, Umin, Umax = parse.(Float32, ARGS[1:4])
 N, nprocs, pid = parse.(Int, ARGS[5:7])
 
 # using ThreadPinning
-# pinthreads([pid])
+# pinthreads([pid-1])
 
-nU = N ÷ nprocs # number of Us the current process should scan
-pidshift = (pid-1) * nU
-Us = range(Umin, Umax, N)[pidshift+1:pidshift+nU]
+Umask = pid:nprocs:N
+Us = range(Umin, Umax, N)
 
 J = 1.0f0
 U = 1
@@ -22,10 +21,10 @@ U = 1
 lattice = Lattice(;dims=(1, 5), isperiodic=true)
 bh = BoseHamiltonian(lattice, J, U, f, ω)
 outdir = "f$(f)_w$(ω)_U$(Umin)-$(Umax)_$(lattice.dims[1])x$(lattice.dims[2])-exact"
-quasienergy(bh, Us; showprogress=false, sort=true, pidshift, outdir);
+quasienergy(bh, Us; showprogress=false, sort=true, Umask, outdir);
 
 # actual calculation
 lattice = Lattice(;dims=(1, 6), isperiodic=true)
 outdir = "f$(f)_w$(ω)_U$(Umin)-$(Umax)_$(lattice.dims[1])x$(lattice.dims[2])-exact"
 bh = BoseHamiltonian(lattice, J, U, f, ω)
-quasienergy(bh, Us; showprogress=false, sort=true, pidshift, outdir);
+quasienergy(bh, Us; showprogress=false, sort=true, Umask, outdir);

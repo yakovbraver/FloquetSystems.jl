@@ -729,7 +729,7 @@ For large sysems (≥8 particles), GC will cause prominent core-stopping as ODE 
 In that case, pass `gctrick=true` so that GC is performed manually once all threads finish an interation.
 The last `length(Us) % nthreads` values will not be calculated.
 """
-function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true, gctrick=false, pidshift=-1) where {Float<:AbstractFloat}
+function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true, gctrick=false, Umask=Int[]) where {Float<:AbstractFloat}
     (;J, f, ω, E₀) = bh
     Cmplx = (Float == Float32 ? ComplexF32 : ComplexF64)
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
@@ -786,13 +786,12 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
     H_rows, H_cols, H_base_vals = findnz(H_base)
     dind = (H_rows .== H_cols)
 
-    # if `outdir` is given but does not exist, then create it
-    (outdir != "" && !isdir(outdir)) && mkdir(outdir)
+    outdir != "" && mkpath(outdir)
 
     params = (H_base, H_base_vals, H_base_vals, H_sign_vals, ω, f) # the contents of `params` do not matter as they will be repalced
     prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false, save_start=false)
 
-    if pidshift > -1
+    if length(Umask) > 0
         ε1 = Vector{Float}(undef, nstates)
         sp1 = Vector{Int}(undef, nstates) # sorting matrix
 
@@ -803,8 +802,9 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
 
         integrator = OrdinaryDiffEq.init(prob, Tsit5())
         workspace = EigenWs(C₀, rvecs=sort)
-        for (i, U) in enumerate(Us)
-            H_buff_vals[dind] .= Us[i] .* (-im .* E₀) # update diagonal of the Hamiltonian
+        for i in Umask
+            U = Us[i]
+            H_buff_vals[dind] .= U .* (-im .* E₀) # update diagonal of the Hamiltonian
             
             reinit!(integrator, C₀)
             integrator.p = (H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f)
@@ -820,7 +820,7 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
                 @. ε1 = -ω * angle(workspace.W) / 2π
             end
 
-            open(joinpath(outdir, "$(pidshift+i).txt"), "w") do io
+            open(joinpath(outdir, "$(i).txt"), "w") do io
                 if sort
                     writedlm(io, vcat([U U], [ε1 sp1]))
                 else

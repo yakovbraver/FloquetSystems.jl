@@ -11,7 +11,7 @@ nstates = length(lattice.basis_states)
 ε = Matrix{Float32}(undef, nstates+1, N) # the first row of `ε` will contain `Us`
 sp = Matrix{Int}(undef, nstates, N) # sorting matrix
 
-rm("f$(f)_w$(ω)_U$(Umin)-$(Umax)_1x5-exact", recursive=true) # directory of warm-up calculation
+rm("f$(f)_w$(ω)_U$(Umin)-$(Umax)_1x5-exact", recursive=true, force=true) # directory of warm-up calculation
 
 basename = "f$(f)_w$(ω)_U$(Umin)-$(Umax)_$(lattice.dims[1])x$(lattice.dims[2])-exact"
 cd(basename)
