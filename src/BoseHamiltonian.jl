@@ -729,8 +729,7 @@ For large sysems (≥8 particles), GC will cause prominent core-stopping as ODE 
 In that case, pass `gctrick=true` so that GC is performed manually once all threads finish an interation.
 The last `length(Us) % nthreads` values will not be calculated.
 """
-function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}, outdir::String="", sort::Bool=false, showprogress=true, gctrick=false, pidshift=-1) where {Float<:AbstractFloat}
-# function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true, gctrick=false, pidshift=-1) where {Float<:AbstractFloat}
+function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true, gctrick=false, pidshift=-1) where {Float<:AbstractFloat}
     (;J, f, ω, E₀) = bh
     Cmplx = (Float == Float32 ? ComplexF32 : ComplexF64)
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
