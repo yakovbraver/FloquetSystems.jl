@@ -25,7 +25,7 @@ end
 "Return `n_isol` levels of `ε` using the permutation matrix `sp`."
 function isolate(ε, sp; n_isol)
     E = Matrix{eltype(ε)}(undef, n_isol, size(ε, 2))
-    for i in eachindex(Us)
+    for i in axes(E, 2)
         E[:, i] = ε[Int.(sp[1:n_isol, i]), i]
     end
     return E
@@ -72,20 +72,17 @@ yaxis!((-2, 2))
 yaxis!((-10.5, 10.5))
 
 # Exact quasienergy spectrum
-lattice = Lattice(;dims=(2, 4), isperiodic=true)
+lattice = Lattice(;dims=(1, 7), isperiodic=true)
 J = 1.0f0 # setting to 1 so that `U` is measured in units of `J`
 ω = 20
 U = 1
 f = 2
 bh = BoseHamiltonian(lattice, J, U, f, ω)
 
-Us = range(13, 13.6, 8)
-Us = range(12, 15, 24)
-@time ε, sp = quasienergy(bh, Us, nthreads=1);
-
-# isolating levels of interest
-sp = readdlm("f2_w20_U12-15_2x4-exact-perm.txt")
-
+# Us = range(13, 13.6, 200)
+Us = range(12, 15, 128)
+GC.gc()
+ε, sp = quasienergy(bh, Us, sort=false, showprogress=true);
 
 gr()
 fig = scatter(Us, ε', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
@@ -109,20 +106,26 @@ scatter!(spectrum[:, u], xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=1, m
 sp2 = copy(spectrum)
 
 using DelimitedFiles
-ε_old = readdlm("f2_w20_U12-15_2x4-exact.txt")
+ε_old = readdlm("calcs/2x4/f5_w10_U6-8_2x4-exact.txt")
+sp = readdlm("calcs/2x4/f5_w10_U6-8_2x4-exact-perm.txt")
 ε = ε_old[2:end, :]
 Us = ε_old[1, :]
+# isolating levels of interest
+n_isol = 1
+E = isolate(ε, sp; n_isol)
+
 fig = scatter(Us, E', xlabel=L"U/J", ylabel=L"\varepsilon/J", title=L"F/\omega=%$f, \omega=%$ω"*", exact", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
 scatter!(Us, E' .+ ω, markersize=0.5, markerstrokewidth=0, c=colour);
 scatter!(Us, E' .- ω, markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native);
 vline!([U₀], c=:red);
-ylims!(-3, 3)
 title!(fig, L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, exact");
+ylims!(-3, 3)
 xlims!(12.33, 14.33);
-xlims!(6, 8)
-ylims!(-ω/2, ω/2);
+xlims!(1.5, 1.8)
+ylims!(-ω/2, ω/2)
+ylims!(-1.3, -0.8)
 
-savefig("f$(f)_w$(ω)_2d3_$(lattice.dims[1])x$(lattice.dims[2])-exact.png")
+savefig("calcs/2x4/f$(f)_w$(ω)_$(numerator(r))d$(denominator(r))_$(lattice.dims[1])x$(lattice.dims[2])-exact-$n_isol.png")
 
 open("calcs/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[2])-exact.txt", "w") do io
     writedlm(io, vcat(Us', ε))
@@ -136,16 +139,15 @@ f = 2
 
 r = 2//3
 
-ωₗ = 0
+ωₗ = -ω/2
 U₀ = float(ω) * r
 
-lattice = Lattice(;dims=(1, 5), isperiodic=true)
-@time bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, ωₗ, type=:dpt, order=3);
+lattice = Lattice(;dims=(1, 6), isperiodic=true)
+bh = BoseHamiltonian(lattice, J, U₀, f, ω, ωₗ, r, type=:dpt, order=3);
 scatter!(1:length(lattice.basis_states), i -> bh.space_of_state[i][2], markersize=1, markerstrokewidth=0, legend=false)
 scatter!(abs.(bh.H[1, :]), markersize=1, markerstrokewidth=0, legend=false)
 scatter(diag(bh.H), markersize=1, markerstrokewidth=0, legend=false)
 plot!(legend=false)
-bh.H[1, 1]
 
 scatter(bh.E₀, markersize=0.5, markerstrokewidth=0)
 range6U = (findfirst(==(6), bh.E₀), findlast(==(6), bh.E₀)) # range of states of energy 6U
@@ -162,12 +164,15 @@ f2 = heatmap(abs.(M), yaxis=:flip, c=:viridis)
 heatmap(abs.(bh.H), yaxis=:flip, c=:viridis)
 plot(bh.H[diagind(bh.H)])
 
-nU = 256
+nU = 128
 Us = range(U₀-1, U₀+1, nU)
 Us = range(1.57, 1.71, nU)
 Us = range(12, 15, nU)
+Us = range(0, ω, nU)
 
-spectrum, sp = dpt(bh, r, ωₗ, Us; order=3, sort=true);
+lattice = Lattice(;dims=(1, 7), isperiodic=true)
+bh = BoseHamiltonian(lattice, J, U₀, f, ω, ωₗ, r, type=:dpt, order=3);
+spectrum, sp = dpt(bh, Us; sort=false, showprogress=true);
 
 # remove Inf's
 mask = spectrum[1, :] .!= Inf
@@ -180,27 +185,49 @@ spec = isolate(spectrum, sp, n_isol=1)
 gr()
 spectrum .%= ω
 spectrum[spectrum .< 0] .+= ω 
-figD2 = scatter(Us, spectrum', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
-scatter!(Us, (spectrum .- ω)', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
+figD2 = scatter(Us, spec', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
+scatter!(Us, (spec .- ω)', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
+ylims!(figD2, (-ω/2, ω/2))
 vline!([U₀], c=:red);
 ylims!(0, 3)
 title!("order = 3")
 ylims!(-5, 5)
 ylims!(figD2, (-0.6, -0.3));
-ylims!(figD2, (-ω/2, ω/2))
 xlims!(12.33, 14.33);
 plot(fig, figD2)
 plot!(xlims=(U₀-1, U₀+1), ylims=(-2, 2), title="isolated")
 
-savefig("f$(f)_w$(ω)_$(numerator(r))d$(denominator(r))_$(lattice.dims[1])x$(lattice.dims[2])-dpt2.png")
+savefig("f$(f)_w$(ω)_$(numerator(r))d$(denominator(r))_$(lattice.dims[1])x$(lattice.dims[2])-dpt3-$n_isol.png")
 
 using DelimitedFiles
-spectrum_file = readdlm("calcs/f2_w20_U12.3-14.3_2x3-dpt3-rezoned.txt")
-figF = scatter(spectrum_file[1, :], spectrum_file[2:end, :]', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native);
-scatter!(spectrum_file[1, :], spectrum_file[2:end, :]' .+ ω, markersize=0.5, markerstrokewidth=0, c=colour);
-scatter!(spectrum_file[1, :], spectrum_file[2:end, :]' .- ω, markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native);
-plot(figD2, figF, link=:y)
-ylims!(0, 2)
+f = 2.0
+ω = 30.0
+r = 4//3
+lattice = Lattice(;dims=(2, 4), isperiodic=true)
+spectrum_file = readdlm("calcs/2x4/f$(f)_w$(ω)_U38.5-41.0_2x4-exact.txt")
+sp = readdlm("calcs/2x4/f$(f)_w$(ω)_U38.5-41.0_2x4-exact-perm.txt")
+
+Us = spectrum_file[1, :]
+spectrum = spectrum_file[2:end, :]
+
+# remove Inf's
+mask = spectrum[1, :] .!= Inf
+spectrum = spectrum[:, mask]
+sp = sp[:, mask]
+Us = Us[mask]
+
+n_isol = 100
+spec = isolate(spectrum, sp; n_isol)
+
+figD = scatter(Us, spec', xlabel=L"U/J", ylabel=L"\varepsilon/J", markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native, widen=false);
+scatter!(Us, spec' .+ ω, markersize=0.5, markerstrokewidth=0, c=colour);
+scatter!(Us, spec' .- ω, markersize=0.5, markerstrokewidth=0, c=colour, legend=false, ticks=:native);
+title!(figD, L"F/\omega=%$f, \omega=%$ω"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice, order = 3");
+xlims!(18, 22)
+ylims!(-ω/2, ω/2)
+ylims!(-3, 0)
+
+savefig("calcs/2x4/f$(f)_w$(ω)_$(numerator(r))d$(denominator(r))_$(lattice.dims[1])x$(lattice.dims[2])-exact-$n_isol.png")
 
 open("calcs/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[2])-dpt3.txt", "w") do io
     writedlm(io, vcat(Us', spectrum))
@@ -210,17 +237,46 @@ open("calcs/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[
     writedlm(io, sp)
 end
 
-####### Levels in the Floquet zone
-gr()
-r = 2//3
+################ Analyse residual couplings
+J = 1.0f0
+f = 2
+ω = 30
+ωₗ = -ω/2
+r = 1//1
 U₀ = float(ω) * r
-bh = BoseHamiltonian(lattice, J, U₀, f, ω, r, type=:dpt, order=1);
-fig0 = scatter(bh.E₀*U₀, markersize=2, markerstrokewidth=0, minorgrid=true, ylabel=L"\varepsilon/J", xlabel="level number");
-scatter!(bh.E₀*U₀ .+ ω, markersize=2, markerstrokewidth=0, minorgrid=true, ylabel=L"\varepsilon/J", xlabel="level number");
-for i in 1:20
-    scatter!(fig0, bh.E₀*U₀ .- i*ω, markersize=2, markerstrokewidth=0, legend=false);
-end
-title!(L"\omega=%$(ω),\ U = 2\omega/3"*", $(lattice.dims[1])x$(lattice.dims[2]) lattice")
-hline!([-ω/2, ω/2], c=:white)
-ylims!(-1.5ω, 1.5ω)
-savefig("levels_w$(ω)_$(numerator(r))d$(denominator(r))_$(lattice.dims[1])x$(lattice.dims[2]).pdf")
+lattice = Lattice(;dims=(2, 4), isperiodic=true)
+bh = BoseHamiltonian(lattice, J, U₀, f, ω, ωₗ, r, type=:dpt, order=1);
+
+W = residuals!(bh)
+m, i = findmax(bh.H)
+W[i]
+
+ra = 1
+ra = [478:1037; 1108:1275]
+ra = [3236:3655; 3824:4103]
+ra = 5112:5447
+ra = 5448:5475
+
+maximum(bh.H[:, ra])
+ar = argmax(bh.H[:, ra])
+W[ar[1], ra[ar[2]]]
+
+α = 1
+A, a = bh.space_of_state[α]
+α′ = 5
+_, a′ = bh.space_of_state[α′]
+
+n = -2
+besselj(a - (a′ + n), f)
+(bh.ε₀[α] - (bh.ε₀[α′] - n*ω))
+
+n = -1
+besselj(a - (a′ + n), f)
+(bh.ε₀[α] - (bh.ε₀[α′] - n*ω))
+
+theme(:dark, size=(1600, 600))
+f1 = heatmap(bh.H, yaxis=:flip, c=:viridis);
+f2 = heatmap(W, yaxis=:flip, c=:viridis);
+plot(f1, f2, link=:both)
+
+scatter(bh.E₀, markerstrokewidth=0, markersize=1, legend=false)
