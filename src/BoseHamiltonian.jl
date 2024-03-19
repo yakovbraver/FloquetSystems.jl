@@ -713,6 +713,15 @@ function residuals!(bh::BoseHamiltonian{Float}) where {Float<:AbstractFloat}
     return W
 end
 
+function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true) where {Float<:AbstractFloat}
+    nstates = length(bh.lattice.basis_states)
+    nU = length(Us)
+    ε = Matrix{Float}(undef, nstates, nU)
+    sp = Matrix{Int}(undef, nstates, nU)
+    quasienergy!(ε, sp, bh, Us; outdir, sort, showprogress, Umask=Int[])
+    return ε, sp
+end
+
 """
 Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`.
 Loop over `Us` is parallelised using all threads that julia was launched with.
@@ -731,7 +740,8 @@ The loop over Us[Umask] will be run sequentially (i.e. no threading).
 The function will not return anything, but instead write the quasienergies (and optionally the permutation vectors) to the files as described above
 ("<i>.txt" will correspond to `Us[i]`)
 """
-function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true, Umask=Int[], E, SP) where {Float<:AbstractFloat}
+function quasienergy!(ε::AbstractMatrix, sp::AbstractMatrix, bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true,
+                      Umask::AbstractVector{<:Integer}) where {Float<:AbstractFloat}
     (;J, f, ω, E₀) = bh
     Cmplx = (Float == Float32 ? ComplexF32 : ComplexF64)
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
@@ -767,14 +777,11 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
     append!(H_cols, 1:nstates)
 
     nthreads = Threads.nthreads()
-    if nthreads > 1 || length(Umask) > 0
+    noblas = nthreads > 1 || length(Umask) > 0
+    if noblas
         nblas = BLAS.get_num_threads() # save original number of threads to restore later
         BLAS.set_num_threads(1)
     end
-
-    nU = length(Umask) > 0 ? length(Umask) : length(Us)
-    ε = Matrix{Float}(undef, nstates, nU)
-    sp = Matrix{Int}(undef, nstates, nU) # sorting matrix
 
     C₀ = Matrix{Cmplx}(I, nstates, nstates)
     
@@ -791,46 +798,17 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
 
     outdir != "" && mkpath(outdir)
 
-    params = (H_base, H_base_vals, H_base_vals, H_sign_vals, ω, f) # the contents of `params` do not matter as they will be repalced
+    params = (H_base, H_base_vals, H_base_vals, H_sign_vals, ω, f) # the contents of `params` do not matter as they will be replaced
     prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false, save_start=false)
 
     if length(Umask) > 0 # distributed mode
-        # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving,
-        # while off-diagnoal elements will be mutated at each step
+        # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving, while off-diagnoal elements will be mutated at each step
         H_buff = copy(H_base)
-        H_buff_vals = nonzeros(H_buff) # a view to non-zero elements
-
         integrator = OrdinaryDiffEq.init(prob, Tsit5())
         workspace = EigenWs(C₀, rvecs=sort)
         for i in Umask
-            U = Us[i]
-            H_buff_vals[dind] .= U .* (-im .* E₀) # update diagonal of the Hamiltonian
-            
-            reinit!(integrator, C₀)
-            integrator.p = (H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f)
-            sol = solve!(integrator)
-
-            if sort
-                t = LAPACK.geevx!(workspace, 'N', 'N', 'V', 'N', sol[end]) # this updates `workspace`
-                e, v = t[2], t[4] # convenience views
-                sortperm!(@view(SP[:, i]), @view(v[1, :]), rev=true, by=abs2)
-                @. E[:, i] = -ω * angle(e) / 2π
-            else
-                LAPACK.geevx!(workspace, 'N', 'N', 'N', 'N', sol[end]) # this updates `workspace`
-                @. E[:, i] = -ω * angle(workspace.W) / 2π
-            end
-        
-            if outdir != ""
-                open(joinpath(outdir, "$(i).txt"), "w") do io
-                    if sort
-                        writedlm(io, vcat([U U], [E[:, i] SP[:, i]]))
-                    else
-                        writedlm(io, vcat([U], E[:, i]))
-                    end
-                end
-            end
+            quasienergy_step!(ε, sp, i, Us[i], dind, E₀, H_buff, integrator, workspace, C₀, H_base_vals, H_sign_vals, ω, f, sort, outdir)
         end
-        BLAS.set_num_threads(nblas) # restore original number of threads
     else # threaded mode
         H_buff_chnl = Channel{typeof(H_base)}(nthreads)
         worskpace_chnl = Channel{EigenWs{Cmplx, Matrix{Cmplx}, Float}}(nthreads)
@@ -843,40 +821,13 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
 
         progbar = ProgressMeter.Progress(length(Us); enabled=showprogress)
         Threads.@threads for i in eachindex(Us)
-            U = Us[i]
-
-            H_buff = take!(H_buff_chnl)
-            integrator = take!(integrator_chnl)
-            workspace = take!(worskpace_chnl)
-        
-            # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving,
-            # while off-diagnoal elements will be mutated at each step
-            H_buff_vals = nonzeros(H_buff) # a view to non-zero elements
-            H_buff_vals[dind] .= U .* (-im .* E₀) # update diagonal of the Hamiltonian
+            # declare `local` so as not to interfere with identical names in the preceding `if` branch (bizzare thing!)
+            local H_buff = take!(H_buff_chnl)
+            local integrator = take!(integrator_chnl)
+            local workspace = take!(worskpace_chnl)
             
-            reinit!(integrator, C₀)
-            integrator.p = (H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f)
-            sol = solve!(integrator)
-        
-            if sort
-                t = LAPACK.geevx!(workspace, 'N', 'N', 'V', 'N', sol[end]) # this updates `workspace`
-                e, v = t[2], t[4] # convenience views
-                sortperm!(@view(sp[:, i]), @view(v[1, :]), rev=true, by=abs2)
-                @. ε[:, i] = -ω * angle(e) / 2π
-            else
-                LAPACK.geevx!(workspace, 'N', 'N', 'N', 'N', sol[end]) # this updates `workspace`
-                @. ε[:, i] = -ω * angle(workspace.W) / 2π
-            end
-        
-            if outdir != ""
-                open(joinpath(outdir, "$(i).txt"), "w") do io
-                    if sort
-                        writedlm(io, vcat([U U], [ε[:, i] sp[:, i]]))
-                    else
-                        writedlm(io, vcat([U], ε[:, i]))
-                    end
-                end
-            end
+            quasienergy_step!(ε, sp, i, Us[i], dind, E₀, H_buff, integrator, workspace, C₀, H_base_vals, H_sign_vals, ω, f, sort, outdir)
+
             put!(H_buff_chnl, H_buff)
             put!(integrator_chnl, integrator)
             put!(worskpace_chnl, workspace)
@@ -884,11 +835,39 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
             ProgressMeter.next!(progbar)
         end
         ProgressMeter.finish!(progbar)
-
-        nthreads > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
     end
+    noblas && BLAS.set_num_threads(nblas) # restore original number of threads
+end
+
+function quasienergy_step!(ε, sp, i, U, dind, E₀, H_buff, integrator, workspace, C₀, H_base_vals, H_sign_vals, ω, f, sort, outdir)
+    # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving,
+    # while off-diagnoal elements will be mutated at each step
+    H_buff_vals = nonzeros(H_buff) # a view to non-zero elements
+    H_buff_vals[dind] .= U .* (-im .* E₀) # update diagonal of the Hamiltonian
     
-    return ε, sp
+    reinit!(integrator, C₀)
+    integrator.p = (H_buff, H_buff_vals, H_base_vals, H_sign_vals, ω, f)
+    sol = solve!(integrator)
+
+    if sort
+        t = LAPACK.geevx!(workspace, 'N', 'N', 'V', 'N', sol[end])
+        e, v = t[2], t[4] # convenience views
+        sortperm!(@view(sp[:, i]), @view(v[1, :]), rev=true, by=abs2)
+        @. ε[:, i] = -ω * angle(e) / 2π
+    else
+        LAPACK.geevx!(workspace, 'N', 'N', 'N', 'N', sol[end])
+        @. ε[:, i] = -ω * angle(workspace.W) / 2π
+    end
+
+    if outdir != ""
+        open(joinpath(outdir, "$(i).txt"), "w") do io
+            if sort
+                writedlm(io, vcat([U U], [ε[:, i] sp[:, i]]))
+            else
+                writedlm(io, vcat([U], ε[:, i]))
+            end
+        end
+    end
 end
 
 "Schrödinger equation used for monodromy matrix calculation."
