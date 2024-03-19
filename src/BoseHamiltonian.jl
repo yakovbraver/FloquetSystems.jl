@@ -1,11 +1,11 @@
 using OrdinaryDiffEq, SparseArrays, DelimitedFiles, FastLapackInterface
 using SpecialFunctions: besselj0, besselj
 using LinearAlgebra: LAPACK, BLAS, Eigen, Symmetric, I, diagind, diag, eigen, eigvals, mul!
+using Distributed, SharedArrays
 using ProgressMeter: @showprogress
 import ProgressMeter
 using FLoops: @floop, @init
 import FLoops
-
 import Base.show, Base.copy
 
 """
@@ -716,32 +716,32 @@ end
 function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true) where {Float<:AbstractFloat}
     nstates = length(bh.lattice.basis_states)
     nU = length(Us)
-    ε = Matrix{Float}(undef, nstates, nU)
-    sp = Matrix{Int}(undef, nstates, nU)
-    quasienergy!(ε, sp, bh, Us; outdir, sort, showprogress, Umask=Int[])
+    if nprocs() == 1
+        ε = Matrix{Float}(undef, nstates, nU)
+        sp = Matrix{Int}(undef, nstates, nU)
+    else
+        ε = SharedMatrix{Float}(nstates, nU)
+        sp = SharedMatrix{Int}(nstates, nU)
+    end
+    quasienergy!(ε, sp, bh, Us; outdir, sort, showprogress)
     return ε, sp
 end
 
 """
 Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`.
-Loop over `Us` is parallelised using all threads that julia was launched with.
+Loop over `Us` is parallelised: using processes if Julia is launched with more than one process, and using threads otherwise.
 BLAS threading is turned off, but is restored to the original state upon finishing the calculation.
 
 If `outdir` is passed, a new directory will be created (if it does not exist) where the quasienergy spectrum at each `i`th value of `Us`
 will be output immediately after calculation. The files are named as "<i>.txt"; the first value in the file is `Us[i]`, and the following
 are the quasienergies.
 
-If `sort=true`, the second returned argument, which is the permutation matrix, will be populated.
+If `sort=true`, the second argument (`sp`), which is the permutation matrix, will be populated.
 This allows one to isolate the quasienergies of states having the largest overlap with the ground state.
 The first value in the file is `Us[i]`, and the following are the permutation integers.
-
-The function can be used in distributed mode by setting `Umask` to the indiced showing which values of `Us` to treat.
-The loop over Us[Umask] will be run sequentially (i.e. no threading).
-The function will not return anything, but instead write the quasienergies (and optionally the permutation vectors) to the files as described above
-("<i>.txt" will correspond to `Us[i]`)
 """
-function quasienergy!(ε::AbstractMatrix, sp::AbstractMatrix, bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true,
-                      Umask::AbstractVector{<:Integer}) where {Float<:AbstractFloat}
+function quasienergy!(ε::AbstractMatrix, sp::AbstractMatrix, bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false,
+                      showprogress=true) where {Float<:AbstractFloat}
     (;J, f, ω, E₀) = bh
     Cmplx = (Float == Float32 ? ComplexF32 : ComplexF64)
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
@@ -777,7 +777,8 @@ function quasienergy!(ε::AbstractMatrix, sp::AbstractMatrix, bh::BoseHamiltonia
     append!(H_cols, 1:nstates)
 
     nthreads = Threads.nthreads()
-    noblas = nthreads > 1 || length(Umask) > 0
+    np = nprocs()
+    noblas = nthreads > 1 || np > 1
     if noblas
         nblas = BLAS.get_num_threads() # save original number of threads to restore later
         BLAS.set_num_threads(1)
@@ -801,13 +802,16 @@ function quasienergy!(ε::AbstractMatrix, sp::AbstractMatrix, bh::BoseHamiltonia
     params = (H_base, H_base_vals, H_base_vals, H_sign_vals, ω, f) # the contents of `params` do not matter as they will be replaced
     prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false, save_start=false)
 
-    if length(Umask) > 0 # distributed mode
-        # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving, while off-diagnoal elements will be mutated at each step
-        H_buff = copy(H_base)
-        integrator = OrdinaryDiffEq.init(prob, Tsit5())
-        workspace = EigenWs(C₀, rvecs=sort)
-        for i in Umask
-            quasienergy_step!(ε, sp, i, Us[i], dind, E₀, H_buff, integrator, workspace, C₀, H_base_vals, H_sign_vals, ω, f, sort, outdir)
+    if np > 1 # distributed mode
+        nw = nworkers()
+        pmap(1:nw) do pid
+            # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving, while off-diagnoal elements will be mutated at each step
+            H_buff = H_base # `H_base` will be copied to each process, so we only set `H_buff` to reference it
+            integrator = OrdinaryDiffEq.init(prob, Tsit5())
+            workspace = EigenWs(C₀, rvecs=sort)
+            for i in pid:nw:length(Us)
+                quasienergy_step!(ε, sp, i, Us[i], dind, E₀, H_buff, integrator, workspace, C₀, H_base_vals, H_sign_vals, ω, f, sort, outdir)
+            end
         end
     else # threaded mode
         H_buff_chnl = Channel{typeof(H_base)}(nthreads)
@@ -821,10 +825,9 @@ function quasienergy!(ε::AbstractMatrix, sp::AbstractMatrix, bh::BoseHamiltonia
 
         progbar = ProgressMeter.Progress(length(Us); enabled=showprogress)
         Threads.@threads for i in eachindex(Us)
-            # declare `local` so as not to interfere with identical names in the preceding `if` branch (bizzare thing!)
-            local H_buff = take!(H_buff_chnl)
-            local integrator = take!(integrator_chnl)
-            local workspace = take!(worskpace_chnl)
+            H_buff = take!(H_buff_chnl)
+            integrator = take!(integrator_chnl)
+            workspace = take!(worskpace_chnl)
             
             quasienergy_step!(ε, sp, i, Us[i], dind, E₀, H_buff, integrator, workspace, C₀, H_base_vals, H_sign_vals, ω, f, sort, outdir)
 

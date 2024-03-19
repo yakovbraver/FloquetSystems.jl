@@ -1,17 +1,11 @@
-# A driving script for autonomous (non-interactive) calculation. Launch as e.g.
-#   $ julia --project --check-bounds=no -t 1 -e 'include("examples/driver.jl")' -- f ω Umin Umax N nprocs pid
-# where `N` is the number of Us to scan, `nprocs` is the total number of processes among which work is split, and `pid` is the ID of the current process, starting from 1
-using FloquetSystems, LinearAlgebra, DelimitedFiles
-
-BLAS.set_num_threads(1)
+# A driving script for non-interactive calculation of the exact spectrum. Launch in multiprocessed mode as
+#   $ julia --project --check-bounds=no -p 8 -e 'include("examples/driver-exact.jl")' -- f ω Umin Umax N
+# where `N` is the number of Us to scan.
+using FloquetSystems, DelimitedFiles
 
 f, ω, Umin, Umax = parse.(Float32, ARGS[1:4])
-N, nprocs, pid = parse.(Int, ARGS[5:7])
+N = parse.(Int, ARGS[5])
 
-# using ThreadPinning
-# pinthreads([pid-1])
-
-Umask = pid:nprocs:N
 Us = range(Umin, Umax, N)
 
 J = 1.0f0
@@ -21,10 +15,22 @@ U = 1
 lattice = Lattice(;dims=(1, 5), isperiodic=true)
 bh = BoseHamiltonian(lattice, J, U, f, ω)
 outdir = "f$(f)_w$(ω)_U$(Umin)-$(Umax)_$(lattice.dims[1])x$(lattice.dims[2])-exact"
-quasienergy(bh, Us; showprogress=false, sort=true, Umask, outdir);
+
+quasienergy(bh, Us, sort=false, showprogress=true);
 
 # actual calculation
-lattice = Lattice(;dims=(1, 6), isperiodic=true)
+lattice = Lattice(;dims=(2, 4), isperiodic=true)
 outdir = "f$(f)_w$(ω)_U$(Umin)-$(Umax)_$(lattice.dims[1])x$(lattice.dims[2])-exact"
 bh = BoseHamiltonian(lattice, J, U, f, ω)
-quasienergy(bh, Us; showprogress=false, sort=true, Umask, outdir);
+
+nstates = length(lattice.basis_states)
+
+ε, sp = quasienergy(bh, Us, sort=false, showprogress=true);
+
+open(outdir*".txt", "w") do io
+    writedlm(io, vcat(Us', ε))
+end
+
+open(outdir*"-perm.txt", "w") do io
+    writedlm(io, sp)
+end
