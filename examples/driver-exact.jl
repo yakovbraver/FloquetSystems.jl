@@ -1,34 +1,37 @@
-# A driving script for autonomous (non-interactive) calculation. Launch as e.g.
-#   $ julia --project --check-bounds=no -t 21 -e 'include("examples/driver.jl")' -- f ω Umin Umax N
-using FloquetSystems, ThreadPinning, DelimitedFiles
-pinthreads(:cores)
-
-J = 1.0f0
-U = 1
+# A driving script for non-interactive calculation of the exact spectrum. Launch in multiprocess mode as
+#   $ julia --project --check-bounds=no -p 8 -e 'include("examples/driver-exact.jl")' -- f ω Umin Umax N
+# where `N` is the number of Us to scan.
+using FloquetSystems, DelimitedFiles
 
 f, ω, Umin, Umax = parse.(Float32, ARGS[1:4])
 N = parse.(Int, ARGS[5])
 
 Us = range(Umin, Umax, N)
 
+J = 1.0f0
+U = 1
+sort = true
+
 # warm up
 lattice = Lattice(;dims=(1, 5), isperiodic=true)
 bh = BoseHamiltonian(lattice, J, U, f, ω)
-outdir = "2x4/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[2])-exact"
-quasienergy(bh, Us; showprogress=false, gctrick=true, sort=true, outdir);
-rm(outdir, recursive=true) # we don't need those file, but the `outdir` argument was used to compile the function
+outdir = "f$(f)_w$(ω)_U$(Umin)-$(Umax)_$(lattice.dims[1])x$(lattice.dims[2])-exact"
+
+quasienergy(bh, Us; sort);
 
 # actual calculation
 lattice = Lattice(;dims=(2, 4), isperiodic=true)
-outdir = "2x4/f$(f)_w$(ω)_U$(Us[1])-$(Us[end])_$(lattice.dims[1])x$(lattice.dims[2])-exact"
+outdir = "f$(f)_w$(ω)_U$(Umin)-$(Umax)_$(lattice.dims[1])x$(lattice.dims[2])-exact"
 bh = BoseHamiltonian(lattice, J, U, f, ω)
-GC.gc()
-ε, sp = quasienergy(bh, Us; showprogress=false, gctrick=true, sort=true, outdir);
+
+nstates = length(lattice.basis_states)
+
+ε, sp = quasienergy(bh, Us; sort);
 
 open(outdir*".txt", "w") do io
     writedlm(io, vcat(Us', ε))
 end
 
-open(outdir*"-perm.txt", "w") do io
+sort && open(outdir*"-perm.txt", "w") do io
     writedlm(io, sp)
 end

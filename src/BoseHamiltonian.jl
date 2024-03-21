@@ -1,11 +1,11 @@
 using OrdinaryDiffEq, SparseArrays, DelimitedFiles, FastLapackInterface
 using SpecialFunctions: besselj0, besselj
 using LinearAlgebra: LAPACK, BLAS, Eigen, Symmetric, I, diagind, diag, eigen, eigvals, mul!
+using Distributed, SharedArrays
 using ProgressMeter: @showprogress
 import ProgressMeter
 using FLoops: @floop, @init
 import FLoops
-
 import Base.show, Base.copy
 
 """
@@ -675,9 +675,9 @@ end
 """
 Analyse residual couplings with states outside the FZ.
 The passed `bh` has to be initialised with the required ωₗ defining the FZ.
-Take a state |0α⟩⟩ together with the state |𝑛α′⟩⟩ which it is coupled to in first order. Scan 𝑛 to find the strongest coupling ratio defined as
+Take a state |𝛼0⟩⟩ together with the states |𝛼′𝑛⟩⟩ which it is coupled to in first order. Scan 𝑛 to find the strongest coupling ratio defined as
 <coupling strength> / <energy distance>. Save this ratio to the correponding elements `bh.H[α′, α]`. Repeat for all (α, α′) pairs.
-Additionally, return a matrix `W` showing the subspace numbers 𝑎′ of |α′⟩: `W[α′, α] = 𝑎′`.
+Additionally, return a matrix `W` with 𝑛's: `W[α′, α] = n`.
 """
 function residuals!(bh::BoseHamiltonian{Float}) where {Float<:AbstractFloat}
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
@@ -702,7 +702,7 @@ function residuals!(bh::BoseHamiltonian{Float}) where {Float<:AbstractFloat}
                     for n in -2:2 # large values of `n` are likely to lead to low ratios because of large energy distance
                         n == 0 && continue # skip levels inside the FZ
                         r = besselj(a - (a′ + n), f) / (ε₀[α] - (ε₀[α′] - n*ω)) |> abs # `n`s are with different signs because adding `n` to subspace number means subtracting `nω` from the energy
-                        r > r_max && (r_max = r; n_max = a′ + n)
+                        r > r_max && (r_max = r; n_max = n)
                     end
                     H[α′, α] = J * r_max * sqrt( (ket[i]+1) * ket[j] )
                     W[α′, α] = n_max
@@ -713,23 +713,37 @@ function residuals!(bh::BoseHamiltonian{Float}) where {Float<:AbstractFloat}
     return W
 end
 
+function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress::Bool=true, reltol::Real=1e-3) where {Float<:AbstractFloat}
+    nstates = length(bh.lattice.basis_states)
+    nU = length(Us)
+    if nprocs() == 1
+        ε = Matrix{Float}(undef, nstates, nU)
+        sp = Matrix{Int}(undef, nstates, nU)
+    else
+        ε = SharedMatrix{Float}(nstates, nU)
+        sp = SharedMatrix{Int}(nstates, nU)
+    end
+    quasienergy!(ε, sp, bh, Us; outdir, sort, showprogress, reltol)
+    return ε, sp
+end
+
 """
 Calculate quasienergy spectrum of `bh` via monodromy matrix for each value of 𝑈 in `Us`.
-Loop over `Us` is parallelised using all threads that julia was launched with.
+Loop over `Us` is parallelised: using processes if Julia is launched with more than one process, and using threads otherwise.
 BLAS threading is turned off, but is restored to the original state upon finishing the calculation.
 
 If `outdir` is passed, a new directory will be created (if it does not exist) where the quasienergy spectrum at each `i`th value of `Us`
 will be output immediately after calculation. The files are named as "<i>.txt"; the first value in the file is `Us[i]`, and the following
 are the quasienergies.
 
-If `sort=true`, the second returned argument, which is the permutation matrix, will be populated.
+If `sort=true`, the second argument (`sp`), which is the permutation matrix, will be populated.
 This allows one to isolate the quasienergies of states having the largest overlap with the ground state.
+If output is enabled using `outdir`, the files with have a second column where the first value is `Us[i]`, and the following are the permutation integers.
 
-For large sysems (≥8 particles), GC will cause prominent core-stopping as ODE solving allocates. 
-In that case, pass `gctrick=true` so that GC is performed manually once all threads finish an interation.
-The last `length(Us) % nthreads` values will not be calculated.
+`reltol` is passed to the ODE solver.
 """
-function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true, gctrick=false) where {Float<:AbstractFloat}
+function quasienergy!(ε::AbstractMatrix, sp::AbstractMatrix, bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false,
+                      showprogress::Bool=true, reltol::Real=1e-3) where {Float<:AbstractFloat}
     (;J, f, ω, E₀) = bh
     Cmplx = (Float == Float32 ? ComplexF32 : ComplexF64)
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
@@ -765,16 +779,13 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
     append!(H_cols, 1:nstates)
 
     nthreads = Threads.nthreads()
-    if nthreads > 1
+    np = nprocs()
+    noblas = nthreads > 1 || np > 1
+    if noblas
         nblas = BLAS.get_num_threads() # save original number of threads to restore later
         BLAS.set_num_threads(1)
     end
 
-    nU = length(Us)
-    gctrick && (nU -= nU % nthreads)
-
-    ε = Matrix{Float}(undef, nstates, nU)
-    sp = Matrix{Int}(undef, nstates, nU) # sorting matrix
     C₀ = Matrix{Cmplx}(I, nstates, nstates)
     
     T = 2π / ω
@@ -788,50 +799,52 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
     H_rows, H_cols, H_base_vals = findnz(H_base)
     dind = (H_rows .== H_cols)
 
-    # if `outdir` is given but does not exist, then create it
-    (outdir != "" && !isdir(outdir)) && mkdir(outdir)
+    outdir != "" && mkpath(outdir)
 
-    params = (H_base, H_base_vals, H_base_vals, H_sign_vals, ω, f) # the contents of `params` do not matter as they will be repalced
+    params = (H_base, H_base_vals, H_base_vals, H_sign_vals, ω, f) # the contents of `params` do not matter as they will be replaced
     prob = ODEProblem(schrodinger!, C₀, tspan, params, save_everystep=false, save_start=false)
 
-    H_buff_chnl = Channel{typeof(H_base)}(nthreads)
-    worskpace_chnl = Channel{EigenWs{Cmplx, Matrix{Cmplx}, Float}}(nthreads)
-    integrator_chnl = Channel{typeof(OrdinaryDiffEq.init(prob, Tsit5()))}(nthreads)
-    for _ in 1:nthreads
-        put!(H_buff_chnl, copy(H_base))
-        put!(worskpace_chnl, EigenWs(C₀, rvecs=sort))
-        put!(integrator_chnl, OrdinaryDiffEq.init(prob, Tsit5()))
-    end
-
-    if gctrick
-        @showprogress enabled=showprogress for k in 1:nU÷nthreads
-            GC.enable(false)
-            Threads.@threads for i in (k-1)*nthreads+1:k*nthreads
-                quasienergy_step!(i, Us[i], H_buff_chnl, integrator_chnl, worskpace_chnl, dind, E₀, C₀, H_base_vals, H_sign_vals, ω, f, sp, ε, outdir, sort)
+    if np > 1 # distributed mode
+        nw = nworkers()
+        pmap(1:nw) do pid
+            # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving, while off-diagnoal elements will be mutated at each step
+            H_buff = H_base # `H_base` will be copied to each process, so we only set `H_buff` to reference it
+            integrator = OrdinaryDiffEq.init(prob, Tsit5(); reltol)
+            workspace = EigenWs(C₀, rvecs=sort)
+            for i in pid:nw:length(Us)
+                quasienergy_step!(ε, sp, i, Us[i], dind, E₀, H_buff, integrator, workspace, C₀, H_base_vals, H_sign_vals, ω, f, sort, outdir)
             end
-            GC.enable(true)
-            GC.gc()
         end
-    else
+    else # threaded mode
+        H_buff_chnl = Channel{typeof(H_base)}(nthreads)
+        worskpace_chnl = Channel{EigenWs{Cmplx, Matrix{Cmplx}, Float}}(nthreads)
+        integrator_chnl = Channel{typeof(OrdinaryDiffEq.init(prob, Tsit5(); reltol))}(nthreads)
+        for _ in 1:nthreads
+            put!(H_buff_chnl, copy(H_base))
+            put!(worskpace_chnl, EigenWs(C₀, rvecs=sort))
+            put!(integrator_chnl, OrdinaryDiffEq.init(prob, Tsit5(); reltol))
+        end
+
         progbar = ProgressMeter.Progress(length(Us); enabled=showprogress)
         Threads.@threads for i in eachindex(Us)
-            quasienergy_step!(i, Us[i], H_buff_chnl, integrator_chnl, worskpace_chnl, dind, E₀, C₀, H_base_vals, H_sign_vals, ω, f, sp, ε, outdir, sort)
+            H_buff = take!(H_buff_chnl)
+            integrator = take!(integrator_chnl)
+            workspace = take!(worskpace_chnl)
+            
+            quasienergy_step!(ε, sp, i, Us[i], dind, E₀, H_buff, integrator, workspace, C₀, H_base_vals, H_sign_vals, ω, f, sort, outdir)
+
+            put!(H_buff_chnl, H_buff)
+            put!(integrator_chnl, integrator)
+            put!(worskpace_chnl, workspace)
+
             ProgressMeter.next!(progbar)
         end
         ProgressMeter.finish!(progbar)
     end
-
-    nthreads > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
-
-    return ε, sp
+    noblas && BLAS.set_num_threads(nblas) # restore original number of threads
 end
 
-"The actual calculation of the quasienergy spectrum for a single value of `U`."
-function quasienergy_step!(i, U, H_buff_chnl, integrator_chnl, worskpace_chnl, dind, E₀, C₀, H_base_vals, H_sign_vals, ω, f, sp, ε, outdir, sort)
-    H_buff = take!(H_buff_chnl)
-    integrator = take!(integrator_chnl)
-    workspace = take!(worskpace_chnl)
-
+function quasienergy_step!(ε, sp, i, U, dind, E₀, H_buff, integrator, workspace, C₀, H_base_vals, H_sign_vals, ω, f, sort, outdir)
     # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving,
     # while off-diagnoal elements will be mutated at each step
     H_buff_vals = nonzeros(H_buff) # a view to non-zero elements
@@ -842,12 +855,12 @@ function quasienergy_step!(i, U, H_buff_chnl, integrator_chnl, worskpace_chnl, d
     sol = solve!(integrator)
 
     if sort
-        t = LAPACK.geevx!(workspace, 'N', 'N', 'V', 'N', sol[end]) # this updates `workspace`
+        t = LAPACK.geevx!(workspace, 'N', 'N', 'V', 'N', sol[end])
         e, v = t[2], t[4] # convenience views
         sortperm!(@view(sp[:, i]), @view(v[1, :]), rev=true, by=abs2)
-        @. ε[:, i] = -ω .* angle.(e) ./ 2π
+        @. ε[:, i] = -ω * angle(e) / 2π
     else
-        LAPACK.geevx!(workspace, 'N', 'N', 'N', 'N', sol[end]) # this updates `workspace`
+        LAPACK.geevx!(workspace, 'N', 'N', 'N', 'N', sol[end])
         @. ε[:, i] = -ω * angle(workspace.W) / 2π
     end
 
@@ -860,9 +873,6 @@ function quasienergy_step!(i, U, H_buff_chnl, integrator_chnl, worskpace_chnl, d
             end
         end
     end
-    put!(H_buff_chnl, H_buff)
-    put!(integrator_chnl, integrator)
-    put!(worskpace_chnl, workspace)
 end
 
 "Schrödinger equation used for monodromy matrix calculation."

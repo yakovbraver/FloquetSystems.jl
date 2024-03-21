@@ -1,5 +1,6 @@
-# A driving script for autonomous (non-interactive) calculation. Launch as e.g.
+# A driving script for non-interactive calculation of dpt spectrum. Launch in multithreaded mode as
 #   $ julia --project --check-bounds=no -t 64 -e 'include("examples/driver-dpt.jl")' -- f ω Umin Umax N order type
+# where `N` is the number of Us to scan, `order` is dpt orded (1, 2, or 3), and `type` is `dpt` or `dpt_quick`.
 using FloquetSystems, DelimitedFiles
 # using ThreadPinning
 # pinthreads(:cores)
