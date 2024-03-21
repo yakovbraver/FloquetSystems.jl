@@ -713,7 +713,7 @@ function residuals!(bh::BoseHamiltonian{Float}) where {Float<:AbstractFloat}
     return W
 end
 
-function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress=true) where {Float<:AbstractFloat}
+function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false, showprogress::Bool=true, reltol::Real=1e-3) where {Float<:AbstractFloat}
     nstates = length(bh.lattice.basis_states)
     nU = length(Us)
     if nprocs() == 1
@@ -723,7 +723,7 @@ function quasienergy(bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; out
         ε = SharedMatrix{Float}(nstates, nU)
         sp = SharedMatrix{Int}(nstates, nU)
     end
-    quasienergy!(ε, sp, bh, Us; outdir, sort, showprogress)
+    quasienergy!(ε, sp, bh, Us; outdir, sort, showprogress, reltol)
     return ε, sp
 end
 
@@ -738,10 +738,12 @@ are the quasienergies.
 
 If `sort=true`, the second argument (`sp`), which is the permutation matrix, will be populated.
 This allows one to isolate the quasienergies of states having the largest overlap with the ground state.
-The first value in the file is `Us[i]`, and the following are the permutation integers.
+If output is enabled using `outdir`, the files with have a second column where the first value is `Us[i]`, and the following are the permutation integers.
+
+`reltol` is passed to the ODE solver.
 """
 function quasienergy!(ε::AbstractMatrix, sp::AbstractMatrix, bh::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; outdir::String="", sort::Bool=false,
-                      showprogress=true) where {Float<:AbstractFloat}
+                      showprogress::Bool=true, reltol::Real=1e-3) where {Float<:AbstractFloat}
     (;J, f, ω, E₀) = bh
     Cmplx = (Float == Float32 ? ComplexF32 : ComplexF64)
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
@@ -807,7 +809,7 @@ function quasienergy!(ε::AbstractMatrix, sp::AbstractMatrix, bh::BoseHamiltonia
         pmap(1:nw) do pid
             # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving, while off-diagnoal elements will be mutated at each step
             H_buff = H_base # `H_base` will be copied to each process, so we only set `H_buff` to reference it
-            integrator = OrdinaryDiffEq.init(prob, Tsit5())
+            integrator = OrdinaryDiffEq.init(prob, Tsit5(); reltol)
             workspace = EigenWs(C₀, rvecs=sort)
             for i in pid:nw:length(Us)
                 quasienergy_step!(ε, sp, i, Us[i], dind, E₀, H_buff, integrator, workspace, C₀, H_base_vals, H_sign_vals, ω, f, sort, outdir)
@@ -816,11 +818,11 @@ function quasienergy!(ε::AbstractMatrix, sp::AbstractMatrix, bh::BoseHamiltonia
     else # threaded mode
         H_buff_chnl = Channel{typeof(H_base)}(nthreads)
         worskpace_chnl = Channel{EigenWs{Cmplx, Matrix{Cmplx}, Float}}(nthreads)
-        integrator_chnl = Channel{typeof(OrdinaryDiffEq.init(prob, Tsit5()))}(nthreads)
+        integrator_chnl = Channel{typeof(OrdinaryDiffEq.init(prob, Tsit5(); reltol))}(nthreads)
         for _ in 1:nthreads
             put!(H_buff_chnl, copy(H_base))
             put!(worskpace_chnl, EigenWs(C₀, rvecs=sort))
-            put!(integrator_chnl, OrdinaryDiffEq.init(prob, Tsit5()))
+            put!(integrator_chnl, OrdinaryDiffEq.init(prob, Tsit5(); reltol))
         end
 
         progbar = ProgressMeter.Progress(length(Us); enabled=showprogress)
