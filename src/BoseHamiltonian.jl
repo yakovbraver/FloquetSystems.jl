@@ -675,9 +675,9 @@ end
 """
 Analyse residual couplings with states outside the FZ.
 The passed `bh` has to be initialised with the required ωₗ defining the FZ.
-Take a state |0α⟩⟩ together with the state |𝑛α′⟩⟩ which it is coupled to in first order. Scan 𝑛 to find the strongest coupling ratio defined as
+Take a state |𝛼0⟩⟩ together with the states |𝛼′𝑛⟩⟩ which it is coupled to in first order. Scan 𝑛 to find the strongest coupling ratio defined as
 <coupling strength> / <energy distance>. Save this ratio to the correponding elements `bh.H[α′, α]`. Repeat for all (α, α′) pairs.
-Additionally, return a matrix `W` showing the subspace numbers 𝑎′ of |α′⟩: `W[α′, α] = 𝑎′`.
+Additionally, return a matrix `W` with 𝑛's: `W[α′, α] = n`.
 """
 function residuals!(bh::BoseHamiltonian{Float}) where {Float<:AbstractFloat}
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
@@ -702,7 +702,7 @@ function residuals!(bh::BoseHamiltonian{Float}) where {Float<:AbstractFloat}
                     for n in -2:2 # large values of `n` are likely to lead to low ratios because of large energy distance
                         n == 0 && continue # skip levels inside the FZ
                         r = besselj(a - (a′ + n), f) / (ε₀[α] - (ε₀[α′] - n*ω)) |> abs # `n`s are with different signs because adding `n` to subspace number means subtracting `nω` from the energy
-                        r > r_max && (r_max = r; n_max = a′ + n)
+                        r > r_max && (r_max = r; n_max = n)
                     end
                     H[α′, α] = J * r_max * sqrt( (ket[i]+1) * ket[j] )
                     W[α′, α] = n_max
