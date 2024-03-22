@@ -309,7 +309,7 @@ function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Floa
                     bra[j] -= 1
                     bra[i] += 1
                     α′ = index_of_state[bra]
-                    A′, a′ = space_of_state[α′]
+                    _, a′ = space_of_state[α′]
                     val = -J * besselj(a - a′, f*i_j) * sqrt( (ket[i]+1) * ket[j] )
                     H[α′, α] += val
                 end
@@ -326,12 +326,12 @@ function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Floa
                             bra[l] -= 1
                             bra[k] += 1
                             val *= √bra[k]
-                            B, b = space_of_state[index_of_state[bra]]
+                            _, b = space_of_state[index_of_state[bra]]
                             val *= √bra[j]
                             bra[j] -= 1
                             bra[i] += 1
                             α′ = index_of_state[bra]
-                            A′, a′ = space_of_state[α′]
+                            _, a′ = space_of_state[α′]
                             val *= √bra[i]
                             val *= (get_R!(R1, U, ω, f, bra[i]-bra[j]-1, a′-b, i_j, k_l, a′, a, b, true) +
                                     get_R!(R1, U, ω, f, ket[l]-ket[k]-1, a-b, i_j, k_l, a′, a, b, true))
@@ -351,14 +351,14 @@ function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Floa
                         val *= √bra[n]; bra[n] -= 1; bra[m] += 1; val *= √bra[m]
                         bra[l] == 0 && continue
                         γ = index_of_state[bra]
-                        C, c = space_of_state[γ]
+                        _, c = space_of_state[γ]
                         val *= √bra[l]; bra[l] -= 1; bra[k] += 1; val *= √bra[k]
                         bra[j] == 0 && continue
                         β = index_of_state[bra]
-                        B, b = space_of_state[β]
+                        _, b = space_of_state[β]
                         val *= √bra[j]; bra[j] -= 1; bra[i] += 1; val *= √bra[i]
                         α′ = index_of_state[bra]
-                        A′, a′ = space_of_state[α′]
+                        _, a′ = space_of_state[α′]
 
                         s = zero(Float) # terms of the sum
                         J_indices = (-a′+b, -b+c, -c+a)
@@ -581,12 +581,15 @@ end
 
 """
 Calculate and return the spectrum for the values of 𝑈 in `Us`, using degenerate theory.
-Calculation is based on the parameters in `bh`, including `bh.type` and `bh.order`
+Calculation is based on the parameters in `bh`, including `bh.order`.
+`bh.type` will be checked and set to `:dpt` if not set already.
 
 If `sort=true`, the second returned argument, which is the permutation matrix, will be populated.
 This allows one to isolate the quasienergies of states having the largest overlap with the ground state.
 """
 function dpt(bh0::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; sort::Bool=false, showprogress=true) where {Float<:AbstractFloat}
+    bh0.type != :dpt && update_params!(bh0; type=:dpt)
+    
     nthreads = Threads.nthreads()
     if nthreads > 1
         nblas = BLAS.get_num_threads() # save original number of threads to restore later
@@ -781,7 +784,7 @@ function quasienergy!(ε::AbstractMatrix, sp::AbstractMatrix, bh::BoseHamiltonia
             for (j, s) in neis_of_cell[i]
                 # 𝑎†ᵢ 𝑎ⱼ
                 if (ket[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
-                    val = -im * -J * sqrt( (ket[i]+1) * ket[j] ) # multiply by `-im` as in the rhs of ∂ₜ𝜓 = -i𝐻𝜓
+                    val = -im * -J * sqrt( (ket[i]+1) * ket[j] ) # multiply by `-im` as on the rhs of ∂ₜ𝜓 = -i𝐻𝜓
                     copy!(bra, ket)
                     bra[j] -= 1
                     bra[i] += 1
@@ -868,8 +871,7 @@ function quasienergy!(ε::AbstractMatrix, sp::AbstractMatrix, bh::BoseHamiltonia
 end
 
 function quasienergy_step!(ε, sp, i, U, dind, E₀, H_buff, integrator, workspace, C₀, H_base_vals, H_sign_vals, ω, f, sort, outdir)
-    # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving,
-    # while off-diagnoal elements will be mutated at each step
+    # diagonal of `H_buff` will remain equal to the diagonal of `H_base` throughout diffeq solving, while off-diagnoal elements will be mutated at each step
     H_buff_vals = nonzeros(H_buff) # a view to non-zero elements
     H_buff_vals[dind] .= U .* (-im .* E₀) # update diagonal of the Hamiltonian
     
