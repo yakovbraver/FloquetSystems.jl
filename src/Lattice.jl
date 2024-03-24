@@ -9,14 +9,14 @@ struct Lattice
     isperiodic::Bool    # periodicity is allowed only along dimensions whose length is larger than 2
     basis_states::Vector{Vector{Int}}     # all basis states as a vector (index => state)
     index_of_state::Dict{Vector{Int},Int} # a dictionary (state => index)
-    neis_of_cell::Vector{Vector{Tuple{Int,Int}}} # neis_of_cell[i][j] = (<cell number of j'th neighbour of i'th cell>, <-1 if neigbour is below or on the right; +1 otherwise>)
+    neis_of_cell::Vector{Vector{Tuple{Int,Int}}} # see `makeneis!`
 end
 
 "Construct a `Lattice` object."
 function Lattice(;dims::Tuple{Int,Int}, nbozons::Integer=prod(dims), isperiodic::Bool)
     ncells = prod(dims)
     nstates = binomial(nbozons+ncells-1, nbozons)
-    lattice = Lattice(ncells, nbozons, dims, isperiodic, Vector{Vector{Int}}(undef, nstates), Dict{Vector{Int},Int}(), Vector{Vector{Tuple{Int,Int}}}(undef, nstates))
+    lattice = Lattice(ncells, nbozons, dims, isperiodic, Vector{Vector{Int}}(undef, nstates), Dict{Vector{Int},Int}(), Vector{Vector{Tuple{Int,Int}}}(undef, ncells))
     makebasis!(lattice)
     makeneis!(lattice)
     return lattice
@@ -40,7 +40,13 @@ function makebasis!(lattice::Lattice)
     end
 end
 
-"Fill `lattice.neis_of_cell`."
+"""
+Fill `lattice.neis_of_cell`. Each `neis_of_cell[i][k]` is a tuple. `i` ∈ [1, `ncells`] enumerates lattice cells,
+while `k` eumerates neighbours (e.g. `k` runs from 1 to 2 for a linear lattice).
+The first element of the tuple is the cell number (call it `j` ∈ [1, `ncells`]) of k'th neighbour of i'th cell.
+The second element of the tuple is the horizontal coordinate difference 𝑥ᵢ - 𝑥ⱼ, i.e. -1 if `j` is to the right of `i`, +1 if `j` is to the left of `i`,
+and zero otherwise (zero is possible in 2D if `j` is below or above `i`).
+"""
 function makeneis!(lattice::Lattice)
     nrows, ncols = lattice.dims
     for cell in 0:lattice.ncells-1 # 0-based index
@@ -48,13 +54,13 @@ function makeneis!(lattice::Lattice)
         col = cell % ncols # 0-based index
         neis = Tuple{Int,Int,Int}[]
         if row > 0 || (lattice.isperiodic && nrows > 2) # neigbour above
-            push!(neis, (rem(row-1, nrows, RoundDown), col, +1))
+            push!(neis, (rem(row-1, nrows, RoundDown), col, 0))
         end
         if col < ncols - 1 || (lattice.isperiodic && ncols > 2) # neigbour to the right
             push!(neis, (row, (col+1)%ncols, -1))
         end
         if row < nrows - 1 || (lattice.isperiodic && nrows > 2) # neigbour below
-            push!(neis, ((row+1)%nrows, col, -1))
+            push!(neis, ((row+1)%nrows, col, 0))
         end
         if col > 0 || (lattice.isperiodic && ncols > 2) # neigbour to the left
             push!(neis, (row, rem(col-1, ncols, RoundDown), +1))

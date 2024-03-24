@@ -717,7 +717,7 @@ function residuals!(bh::BoseHamiltonian{Float}) where {Float<:AbstractFloat}
     for (ket, α) in index_of_state
         _, a = space_of_state[α]
         for i = 1:ncells # iterate over the terms of the Hamiltonian
-            for (j, _) in neis_of_cell[i]
+            for (j, i_j) in neis_of_cell[i]
                 if (ket[j] > 0) # check that a particle is present at site `j` so that destruction 𝑎ⱼ is possible
                     copy!(bra, ket)
                     bra[j] -= 1
@@ -725,9 +725,9 @@ function residuals!(bh::BoseHamiltonian{Float}) where {Float<:AbstractFloat}
                     α′ = index_of_state[bra]
                     _, a′ = space_of_state[α′]
                     r_max, n_max = 0.0, 0
-                    for n in -2:2 # large values of `n` are likely to lead to low ratios because of large energy distance
+                    for n in -5:5 # large values of `n` are likely to lead to low ratios because of large energy distance
                         n == 0 && continue # skip levels inside the FZ
-                        r = besselj(a - (a′ + n), f) / (ε₀[α] - (ε₀[α′] - n*ω)) |> abs # `n`s are with different signs because adding `n` to subspace number means subtracting `nω` from the energy
+                        r = besselj(a - (a′ + n), f*i_j) / (ε₀[α] - (ε₀[α′] - n*ω)) |> abs # `n`s are with different signs because adding `n` to subspace number means subtracting `nω` from the energy
                         r > r_max && (r_max = r; n_max = n)
                     end
                     H[α′, α] = J * r_max * sqrt( (ket[i]+1) * ket[j] )
