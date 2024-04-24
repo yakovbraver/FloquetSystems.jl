@@ -86,9 +86,9 @@ function update_params!(bh::BoseHamiltonian{<:AbstractFloat}; J::Real=bh.J, U::R
     bh.J = J; bh.U = U; bh.f = f; bh.ω = ω; bh.ωₗ = ωₗ; bh.r = r; bh.order = order; bh.type = type
     if type == :dpt
         map!(bh.space_of_state, bh.E₀) do E
-            # rounding helps in cases such as when E*U - ωₗ = 29.999999999999996 and ÷10 gives 2 instead of 3
+            # rounding helps in cases such as when E*U - ωₗ = 29.9...96 and ÷10 gives 2 instead of 3
             a = round(E*U - ωₗ, sigdigits=6) ÷ ω |> Int
-            A = E % denominator(r)
+            A = E % denominator(r) # not used in DPT!
             return (A, a)
         end
         for i in eachindex(bh.E₀)
@@ -98,7 +98,7 @@ function update_params!(bh::BoseHamiltonian{<:AbstractFloat}; J::Real=bh.J, U::R
     elseif type == :dpt_quick
         map!(bh.space_of_state, bh.E₀) do E
             a = round(E*r*ω - ωₗ, sigdigits=6) ÷ ω |> Int
-            A = E % denominator(r)
+            A = clamp(E % denominator(r), 0, 1) # if division result is 0, then A = 0, otherwise A = 1
             return (A, a)
         end
         for i in eachindex(bh.E₀)
@@ -728,7 +728,7 @@ function residuals!(bh::BoseHamiltonian{Float}) where {Float<:AbstractFloat}
                     for n in -5:5 # large values of `n` are likely to lead to low ratios because of large energy distance
                         n == 0 && continue # skip levels inside the FZ
                         r = besselj(a - (a′ + n), f*i_j) / (ε₀[α] - (ε₀[α′] - n*ω)) |> abs # `n`s are with different signs because adding `n` to subspace number means subtracting `nω` from the energy
-                        r > r_max && (r_max = r; n_max = n)
+                        r > r_max && (r_max = r; n_max = -n) # -n will show the number of Floquet zone
                     end
                     H[α′, α] = J * r_max * sqrt( (ket[i]+1) * ket[j] )
                     W[α′, α] = n_max
