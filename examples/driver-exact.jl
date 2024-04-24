@@ -11,22 +11,21 @@ Us = range(Umin, Umax, N)
 J = 1.0f0
 U = 1
 sort = true
+reltol = 1e-3
 
 # warm up
 lattice = Lattice(;dims=(1, 5), isperiodic=true)
 bh = BoseHamiltonian(lattice, J, U, f, ω)
 outdir = "f$(f)_w$(ω)_U$(Umin)-$(Umax)_$(lattice.dims[1])x$(lattice.dims[2])-exact"
 
-quasienergy(bh, Us; sort);
+quasienergy(bh, Us; sort, reltol);
 
 # actual calculation
 lattice = Lattice(;dims=(2, 4), isperiodic=true)
 outdir = "f$(f)_w$(ω)_U$(Umin)-$(Umax)_$(lattice.dims[1])x$(lattice.dims[2])-exact"
 bh = BoseHamiltonian(lattice, J, U, f, ω)
 
-nstates = length(lattice.basis_states)
-
-ε, sp = quasienergy(bh, Us; sort);
+ε, sp = quasienergy(bh, Us; sort, reltol);
 
 open(outdir*".txt", "w") do io
     writedlm(io, vcat(Us', ε))
