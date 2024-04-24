@@ -69,7 +69,7 @@ function makeneis!(lattice::Lattice)
     end
 end
 
-"Print a textual representation of a `Lattice`."
+"Print a textual representation of a `lattice`."
 function Base.show(io::IO, lattice::Lattice)
     println("$(lattice.nbozons) bozons on a $(lattice.isperiodic ? "" : "non")periodic lattice:")
     # print cell numbers
@@ -78,4 +78,12 @@ function Base.show(io::IO, lattice::Lattice)
         i % lattice.dims[2] == 0 && println(io)
     end
     println(io, "Total number of states: $(length(lattice.basis_states))")
+end
+
+"Print the `n`th basis state of `lattice`, with numbers representing occupations."
+function print_state(lattice::Lattice, n)
+    for i in 1:prod(lattice.dims)
+        print(" $(lattice.basis_states[n][i])")
+        i % lattice.dims[2] == 0 && println()
+    end
 end
