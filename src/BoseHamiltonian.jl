@@ -18,17 +18,17 @@ mutable struct BoseHamiltonian{Float <: AbstractFloat}
     U::Float
     f::Float # F / ω
     ω::Float
-    ωₗ::Float # lower bound of the Floquet zone; needed for DPT calculations
-    r::Rational{Int} # resonance number; needed for quick-DPT calculations
-    type::Symbol     # `:dpt`, `:dpt_quick`, `:diverging` or anything else for ordinary high-frequency expansion
-    order::Int  # oder of DPT
+    ωₗ::Float # lower bound of the Floquet zone; needed for (E)DPT calculations
+    r::Rational{Int} # resonance number; needed for DPT calculations
+    type::Symbol     # `:edpt`, `:dpt`, `:diverging` or anything else for ordinary high-frequency expansion
+    order::Int  # oder of (E)DPT
     space_of_state::Vector{Tuple{Int,Int}}    # space_of_state[i] stores the subspace number (𝐴, 𝑎) of i'th state, with 𝐴 = 0 assigned to all nondegenerate space
     H::Matrix{Float}   # the Hamiltonian matrix
     E₀::Vector{Int}    # zeroth-order spectrum, in units of 𝑈
     ε₀::Vector{Float}  # zeroth-order quasienergy spectrum
-    R1::Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float} # required for DPT-2 calculation
-    R2::Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float} # required for DPT-3 calculation
-    R3::Dict{NTuple{7, Int64}, Float} # required for DPT-3 calculation
+    R1::Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float} # required for (E)DPT calculation
+    R2::Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float} # required for (E)DPT-3 calculation
+    R3::Dict{NTuple{7, Int64}, Float} # required for (E)DPT-3 calculation
 end
 
 """
@@ -52,7 +52,7 @@ function BoseHamiltonian(lattice::Lattice, J::Float, U::Real, f::Real, ω::Real;
     R1 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Bool}, Float}()
     R2 = Dict{Tuple{Int,Int,Int,Int,Int,Int,Int,Int,Int,Int,Bool}, Float}()
     R3 = Dict{NTuple{7, Int64}, Float}()
-    space_of_state = (type in (:dpt, :dpt_quick) ? Vector{Tuple{Int,Int}}(undef, nstates) : Vector{Tuple{Int,Int}}())
+    space_of_state = (type in (:edpt, :dpt) ? Vector{Tuple{Int,Int}}(undef, nstates) : Vector{Tuple{Int,Int}}())
 
     bh = BoseHamiltonian(lattice, Float(J), Float(U), Float(f), Float(ω), Float(ωₗ), r, type, order, space_of_state, H, E₀, ε₀, R1, R2, R3)
     update_params!(bh)
@@ -84,18 +84,18 @@ end
 "Update parameters of `bh` and reconstruct `bh.H`."
 function update_params!(bh::BoseHamiltonian{<:AbstractFloat}; J::Real=bh.J, U::Real=bh.U, f::Real=bh.f, ω::Real=bh.ω, ωₗ::Real=bh.ωₗ, r::Rational=bh.r, order::Integer=bh.order, type::Symbol=bh.type)
     bh.J = J; bh.U = U; bh.f = f; bh.ω = ω; bh.ωₗ = ωₗ; bh.r = r; bh.order = order; bh.type = type
-    if type == :dpt
+    if type == :edpt
         map!(bh.space_of_state, bh.E₀) do E
             # rounding helps in cases such as when E*U - ωₗ = 29.9...96 and ÷10 gives 2 instead of 3
             a = round(E*U - ωₗ, sigdigits=6) ÷ ω |> Int
-            A = E % denominator(r) # not used in DPT!
+            A = E % denominator(r) # not used in EDPT!
             return (A, a)
         end
         for i in eachindex(bh.E₀)
             bh.ε₀[i] = bh.E₀[i]*U - bh.space_of_state[i][2]*ω
         end
-        constructH_dpt!(bh, order)
-    elseif type == :dpt_quick
+        constructH_edpt!(bh, order)
+    elseif type == :dpt
         map!(bh.space_of_state, bh.E₀) do E
             a = round(E*r*ω - ωₗ, sigdigits=6) ÷ ω |> Int
             A = clamp(E % denominator(r), 0, 1) # if division result is 0, then A = 0, otherwise A = 1
@@ -104,7 +104,7 @@ function update_params!(bh::BoseHamiltonian{<:AbstractFloat}; J::Real=bh.J, U::R
         for i in eachindex(bh.E₀)
             bh.ε₀[i] = bh.E₀[i]*U - bh.space_of_state[i][2]*ω
         end
-        constructH_dpt_quick!(bh, order)
+        constructH_dpt!(bh, order)
     elseif type == :diverging
         constructH_diverging!(bh, order)
     else
@@ -191,8 +191,8 @@ function constructH!(bh::BoseHamiltonian{Float}, order::Integer) where {Float<:A
 end
 
 """
-Construct the Hamiltonian matrix for the degenerate case but without DPT.
-We do not assume that 𝑈 ≪ 𝜔, but we do not use DPT either, leading to diverging results.
+Construct the Hamiltonian matrix for the degenerate case but without (E)DPT.
+We do not assume that 𝑈 ≪ 𝜔, but we do not use (E)DPT either, leading to diverging results.
 """
 function constructH_diverging!(bh::BoseHamiltonian{Float}, order::Integer) where {Float<:AbstractFloat}
     (;J, U, f, ω, H) = bh
@@ -287,8 +287,8 @@ function 𝑅(ω::Real, Un::Real, f::Real; type::Integer)
     return r
 end
 
-"Construct the Hamiltonian matrix."
-function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Float<:AbstractFloat}
+"Construct the Hamiltonian matrix using EDPT."
+function constructH_edpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Float<:AbstractFloat}
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
     (;J, U, f, ω, E₀, ε₀, space_of_state, H, R1, R2, R3) = bh
 
@@ -410,8 +410,8 @@ function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Floa
     end
 end
 
-"Construct the Hamiltonian matrix."
-function constructH_dpt_quick!(bh::BoseHamiltonian{Float}, order::Integer) where {Float<:AbstractFloat}
+"Construct the Hamiltonian matrix using DPT."
+function constructH_dpt!(bh::BoseHamiltonian{Float}, order::Integer) where {Float<:AbstractFloat}
     (;index_of_state, ncells, neis_of_cell) = bh.lattice
     (;J, U, f, ω, E₀, ε₀, space_of_state, H, R1, R2, R3) = bh
 
@@ -548,7 +548,7 @@ function push_state!(H_rows, H_cols, H_vals, val; row, col)
     push!(H_rows, row)
 end
 
-"Return key from the `R` dictionary; required for 2nd order DPT."
+"Return key from the `R` dictionary; required for 2nd order (E)DPT."
 function get_R!(R, U, ω, f, nα, d, i_j, k_l, a′, a, b, skipzero)
     key = (nα, d, i_j, k_l, a′, a, b, skipzero)
     N = 20
@@ -562,7 +562,7 @@ function get_R!(R, U, ω, f, nα, d, i_j, k_l, a′, a, b, skipzero)
     end
 end
 
-"Return key from the `R` dictionary; required for 3rd order DPT."
+"Return key from the `R` dictionary; required for 3rd order (E)DPT."
 function get_R2!(R, U, ω, f, ΔE1, ΔE2, d1, d2, J_indices, J_args, skipzero)
     i1, i2, i3 = J_indices
     x1, x2, x3 = J_args
@@ -582,13 +582,13 @@ end
 """
 Calculate and return the spectrum for the values of 𝑈 in `Us`, using degenerate theory.
 Calculation is based on the parameters in `bh`, including `bh.order`.
-`bh.type` will be checked and set to `:dpt` if not set already.
+`bh.type` will be checked and set to `:edpt` if not set already.
 
 If `sort=true`, the second returned argument, which is the permutation matrix, will be populated.
 This allows one to isolate the quasienergies of states having the largest overlap with the ground state.
 """
-function dpt(bh0::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; sort::Bool=false, showprogress=true) where {Float<:AbstractFloat}
-    bh0.type != :dpt && update_params!(bh0; type=:dpt)
+function edpt(bh0::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; sort::Bool=false, showprogress=true) where {Float<:AbstractFloat}
+    bh0.type != :edpt && update_params!(bh0; type=:edpt)
     
     nthreads = Threads.nthreads()
     if nthreads > 1
@@ -633,13 +633,13 @@ end
 Calculate and return the spectrum for the values of 𝑈 in `Us`, using DPT.
 `subspace` must contain the subspace number (as in `bh.space_of_state[:][1]`) of interest.
 Calculation is based on the parameters in `bh`, including `bh.order`.
-`bh.type` will be checked and set to `:dpt_quick` if not set already.
+`bh.type` will be checked and set to `:dpt` if not set already.
 
 If `sort=true`, the second returned argument, which is the permutation matrix, will be populated.
 This allows one to isolate the quasienergies of states having the largest overlap with the ground state.
 """
-function dpt_quick(bh0::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; sort::Bool=false, showprogress=true, subspace::Integer=0) where {Float<:AbstractFloat}
-    bh0.type != :dpt_quick && update_params!(bh0; type=:dpt_quick)
+function dpt(bh0::BoseHamiltonian{Float}, Us::AbstractVector{<:Real}; sort::Bool=false, showprogress=true, subspace::Integer=0) where {Float<:AbstractFloat}
+    bh0.type != :dpt && update_params!(bh0; type=:dpt)
 
     nthreads = Threads.nthreads()
     if nthreads > 1

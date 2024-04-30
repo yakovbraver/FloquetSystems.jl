@@ -1,6 +1,8 @@
 # A driving script for non-interactive calculation of the exact spectrum. Launch in multiprocess mode as
 #   $ julia --project --check-bounds=no -p 8 -e 'include("examples/driver-exact.jl")' -- f ω Umin Umax N
 # where `N` is the number of Us to scan.
+# Lattice size, diffeq tolerance, and whether sorting should be used are not exposed as the input arguments and should be set in the code below.
+
 using FloquetSystems, DelimitedFiles
 
 f, ω, Umin, Umax = parse.(Float32, ARGS[1:4])
