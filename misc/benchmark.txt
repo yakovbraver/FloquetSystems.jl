@@ -1,0 +1,18 @@
+Tested on AMD 2990WX, 128 GB RAM
+
+Jobs launched via `jobs.sh`
+Exact: -p 21, N = 294, up to 121 GB (= 5.8 GB / thread), reltol=1e-3.
+EDPT: -t 64 (no pinning), N = 320, up to 22 GB (= 0.34 GB / thread).
+
+Exact time is HH:MM. EDPT time is in minutes.
+                            | EDPT3 | EDPT2 | Exact
+f2.0_w20.0_U0.0-30.0_2x4:   |  47   |  45   |  5:55
+f2.0_w20.0_U5.0-8.0_2x4:    |  39   |  36   |  4:46
+f2.0_w20.0_U10.0-17.0_2x4:  |  39   |  37   |  5:41
+f2.0_w20.0_U9.5-10.5_2x4:   |  48   |  44   |  5:33
+f2.0_w30.0_U0.0-45.0_2x4:   |  51   |  46   |  6:00
+f2.0_w30.0_U7.5-12.0_2x4:   |  40   |  36   |  5:16 (reltol=1e-5)
+f2.0_w30.0_U18.0-22.0_2x4:  |  42   |  39   |  5:32 
+f2.0_w30.0_U38.5-41.0_2x4:  |  42   |  38   |  7:41; 11:20 (reltol=1e-5)
+
+DPT3 times was ~3.5 min (the whole script; actual calculation is faster)
