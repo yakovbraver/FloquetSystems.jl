@@ -1,4 +1,4 @@
-# Simple benchmarking script used to obtain the results in arXiv:2405.01383, Appendix B
+# Simple benchmarking script used to obtain the results in 10.1103/PhysRevA.110.023315 (arXiv:2405.01383), Appendix B
 # Tested with 1 Julia thread, 8 BLAS threads
 
 using FloquetSystems
