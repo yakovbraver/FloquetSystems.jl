@@ -47,4 +47,5 @@ PARAMS=(
 for SET in "${PARAMS[@]}"; do
     printf "${SET}: " >> times.txt
 	/usr/bin/time -f "%E" -a -o times.txt julia --project --check-bounds=no -t 64 -e 'include("examples/driver-dpt.jl")' -- ${SET}
+	# /usr/bin/time -h -a -o times.txt julia --project --check-bounds=no -t 8 -e 'include("examples/driver-dpt.jl")' -- ${SET}
 done
