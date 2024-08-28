@@ -11,7 +11,7 @@ end
 
 function 𝑈(lf::LightField, xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real})
     (;ϵ, ϵc) = lf
-    kᵣ = 2π #/ √2
+    kᵣ = 2π / √2
     U = Matrix{Float64}(undef, length(xs), length(ys))
     for (iy, y) in enumerate(ys)
         for (ix, x) in enumerate(xs)
@@ -24,7 +24,7 @@ end
 
 function 𝛼(lf::LightField, x::Real, y::Real)
     (;ϵ, ϵc, χ) = lf
-    kᵣ = 2π #/ √2
+    kᵣ = 2π / √2
     η₋ = cos(kᵣ*(x-y)); η₊ = cos(kᵣ*(x+y))
     return ϵ^2 * (1 + ϵc^2) + η₊^2 + (ϵc*η₋)^2 - 2ϵc*η₊*η₋*cos(χ)  
 end
