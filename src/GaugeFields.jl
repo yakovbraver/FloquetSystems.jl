@@ -12,7 +12,7 @@ mutable struct GaugeField{Float<:AbstractFloat}
     χ::Float
     H_rows::Vector{Int}
     H_cols::Vector{Int}
-    H_vals::Vector{Complex{Float}}
+    H_vals::Vector{Float}
 end
 
 """
@@ -20,7 +20,7 @@ Construct a `GaugeField` object.
 `n_harmonics` is the number of positive harmonics; coordinates will be discretised using `2n_harmonics` points.
 """
 function GaugeField(ϵ::Float, ϵc::Real, χ::Real; n_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
-    gf = GaugeField(ϵ, Float(ϵc), Float(χ), Int[], Int[], Complex{Float}[])
+    gf = GaugeField(ϵ, Float(ϵc), Float(χ), Int[], Int[], Float[])
     constructH!(gf, n_harmonics, fft_threshold)
     return gf
 end
@@ -54,7 +54,7 @@ function constructH!(gf::GaugeField{Float}, M::Integer, fft_threshold::Real) whe
     dx = L / 2M
     x = range(0, L-dx, 2M)
     U = 𝑈(gf, x, x) .* (dx/L)^2
-    u = rfft(U)
+    u = rfft(U) |> real # guaranteed to be real (and even) because `U` is real and even
     u[1, 1] = 0 # remove the secular component -- it has no physical significance but breaks the structure in `filter_count!` if included
     n_elem = filter_count!(u, factor=fft_threshold) # filter small values and calculate the number of elements in the final Hamiltonian
     
