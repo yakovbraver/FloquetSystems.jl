@@ -1,9 +1,10 @@
 module GaugeFields
 
-using FFTW
+using FFTW, SparseArrays, KrylovKit
 
 export GaugeField,
-    𝑈
+    𝑈,
+    spectrum
 
 mutable struct GaugeField{Float<:AbstractFloat}
     ϵ::Float
@@ -14,20 +15,23 @@ mutable struct GaugeField{Float<:AbstractFloat}
     H_vals::Vector{Complex{Float}}
 end
 
-"Construct a `GaugeField` object."
-function GaugeField(ϵ::Float, ϵc::Real, χ::Real) where {Float<:AbstractFloat}
+"""
+Construct a `GaugeField` object.
+`n_harmonics` is the number of positive harmonics; coordinates will be discretised using `2n_harmonics` points.
+"""
+function GaugeField(ϵ::Float, ϵc::Real, χ::Real; n_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
     gf = GaugeField(ϵ, Float(ϵc), Float(χ), Int[], Int[], Complex{Float}[])
-    constructH!(gf)
+    constructH!(gf, n_harmonics, fft_threshold)
     return gf
 end
 
 "Return the 2D gauge potential 𝑈."
-function 𝑈(gf::GaugeField{Float}, xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real})  where {Float<:AbstractFloat}
+function 𝑈(gf::GaugeField{Float}, xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}) where {Float<:AbstractFloat}
     (;ϵ, ϵc) = gf
     U = Matrix{Float}(undef, length(xs), length(ys))
     for (iy, y) in enumerate(ys)
         for (ix, x) in enumerate(xs)
-            β₋ = sin((x-y)/√2); β₊ = sin((x+y)/√2)
+            β₋ = sin(x-y); β₊ = sin(x+y)
             U[ix, iy] = (β₊^2 + (ϵc*β₋)^2) / 𝛼(gf, x, y)^2 * 2ϵ^2*(1+ϵc^2)
         end
     end
@@ -37,29 +41,35 @@ end
 "Helper function for calculating the gauge potential 𝑈."
 function 𝛼(gf::GaugeField, x::Real, y::Real)
     (;ϵ, ϵc, χ) = gf
-    η₋ = cos((x-y)/√2); η₊ = cos((x+y)/√2)
+    η₋ = cos(x-y); η₊ = cos(x+y)
     return ϵ^2 * (1 + ϵc^2) + η₊^2 + (ϵc*η₋)^2 - 2ϵc*η₊*η₋*cos(χ)  
 end
 
-"Construct the Hamiltonian matrix by filling `gf.H_rows`, `gf.H_cols`, and `gf.H_vals`."
-function constructH!(gf::GaugeField{Float}) where {Float<:AbstractFloat}
-    a = 2π  # wavelength, in units of 1/kᵣ
-    L = a√2 # periodicity of the potential
-    M = 32  # number of positive harmonics; coordinates will be discretised using 2M points
-    x = range(0, L, 2M)
-    dx = x[2] - x[1]
-    
+"""
+Construct the Hamiltonian matrix by filling `gf.H_rows`, `gf.H_cols`, and `gf.H_vals`.
+`M` is the number of positive harmonics; coordinates will be discretised using 2M points.
+"""
+function constructH!(gf::GaugeField{Float}, M::Integer, fft_threshold::Real) where {Float<:AbstractFloat}
+    L = π # periodicity of the potential
+    dx = L / 2M
+    x = range(0, L-dx, 2M)
     U = 𝑈(gf, x, x) .* (dx/L)^2
     u = rfft(U)
     u[1, 1] = 0 # remove the secular component -- it has no physical significance but breaks the structure in `filter_count!` if included
-    n_elem = filter_count!(u, factor=1e-3) # filter small values and calculate the number of elements in the final Hamiltonian
-    n_elem += (M+1)^2 # reserve space for the diagonal elements coming from the other terms of the Hamiltonian
+    n_elem = filter_count!(u, factor=fft_threshold) # filter small values and calculate the number of elements in the final Hamiltonian
+    
+    n_diag = (M+1)^2 # number of diagonal elements in 𝐻
+    n_elem += n_diag # reserve space for the diagonal elements coming from the other terms of the Hamiltonian
     
     gf.H_rows = Vector{Int}(undef, n_elem)
     gf.H_cols = Vector{Int}(undef, n_elem)
     gf.H_vals = Vector{Float}(undef, n_elem)
-    
     fft_to_matrix!(gf.H_rows, gf.H_cols, gf.H_vals, u)
+
+    # fill positions of the diagonal elements
+    gf.H_rows[end-n_diag+1:end] .= 1:n_diag
+    gf.H_cols[end-n_diag+1:end] .= 1:n_diag
+    gf.H_vals[end-n_diag+1:end] .= Inf # push Inf's to later locate the diagonal values in `nonzeros(H)` easily
 end
 
 """
@@ -151,6 +161,30 @@ function push_vals!(rows, cols, vals, counter; r_b, c_b, r, c, M, val)
     rows[counter+1] = j
     cols[counter+1] = i
     vals[counter+1] = val'
+end
+
+"""
+Calculate ground state energies.
+Return the enegy matrix for a quarter of the BZ, since ℤ₄ symmetry is assumed.
+"""
+function spectrum(gf::GaugeField{Float}, n_q::Integer) where {Float<:AbstractFloat}
+    E = Matrix{Float}(undef, n_q, n_q)
+
+    H = sparse(gf.H_rows, gf.H_cols, gf.H_vals)
+    H_vals = nonzeros(H)
+    diagidx = findall(==(Inf), H_vals) # find indices of diagonal elements
+
+    M = Int(√size(H, 1))
+    qs = range(0, 1, length=n_q) # BZ is (-1 ≤ 𝑞ₓ, 𝑞𝑦 ≤ 1), but it's enough to consider a triangle 0 ≤ 𝑞ₓ ≤ 1, 0 ≤ 𝑞𝑦 ≤ 𝑞ₓ
+    for (j, qx) in enumerate(qs), i in j:n_q
+        qy = qs[i]
+        for nx in 1:M, ny in 1:M
+            H_vals[diagidx[(nx-1)M+ny]] = qx^2 + qy^2 + 4(qx*nx + qy*ny) + 4(nx^2 + ny^2)
+        end
+        vals, _, _ = eigsolve(H, 1, :SR, tol=(Float == Float32 ? 1e-6 : 1e-12))
+        E[i, j] = E[j, i] = vals[1]
+    end
+    return E
 end
 
 end
