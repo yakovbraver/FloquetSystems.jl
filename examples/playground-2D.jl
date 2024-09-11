@@ -1,8 +1,8 @@
 includet("../src/GaugeFields.jl")
 using .GaugeFields
 
-using LinearAlgebra, Plots, LaTeXStrings
-CMAP = cgrad(:linear_grey_0_100_c0_n256, rev=true)
+using LinearAlgebra, Plots, LaTeXStrings, SparseArrays
+CMAP = cgrad(:linear_grey_0_100_c0_n256, rev=true);
 plotlyjs()
 theme(:dark, size=(800, 600))
 
@@ -14,6 +14,8 @@ gf = GaugeField(ϵ, ϵc, χ; n_harmonics=5)
 
 U = 𝑈(gf, x, x)
 heatmap(x, x, U ./ (1/ϵ^2), c=CMAP, xlabel=L"x / (1/k_R)", ylabel=L"y / (1/k_R)")
+plot(x, U[125, :] / 2pi, xlabel=L"x/a", legend=false)
+savefig("cut.pdf")
 
 # anti-clockwise shaking
 L = π # period of the structure
@@ -26,7 +28,16 @@ for j in 0:n-1, i in 0:n-1
 end
 heatmap(x, x, U ./ (1/ϵ^2), c=CMAP, xlabel=L"x / (1/k_R)", ylabel=L"y / (1/k_R)")
 
-using SparseArrays, LinearAlgebra
-gf = GaugeField(ϵ, ϵc, χ; n_harmonics=30, fft_threshold=0.05)
-E = spectrum(gf, 10)
+gf = GaugeField(Float32(ϵ), ϵc, χ; n_harmonics=100, fft_threshold=0.01)
+@time E = spectrum(gf, 10)
+@time E = spectrum(gf2, 10)
 heatmap(E, c=CMAP)
+
+ϵ = 0.1 # testing for Float64
+ϵc = 1
+χ = 0
+gf = GaugeField(ϵ, ϵc, χ; n_harmonics=2, fft_threshold=0.05)
+heatmap(abs.(sparse(gf.H_rows, gf.H_cols, gf.H_vals)), yaxis=:flip)
+
+fgf = FloquetGaugeField(ϵ, ϵc, χ, 0, 0; n_steps=2, n_floquet_harmonics=4, n_fourier_harmonics=2)
+heatmap(abs.(sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals)), yaxis=:flip)

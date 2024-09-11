@@ -4,23 +4,25 @@ using FFTW, SparseArrays, KrylovKit
 
 export GaugeField,
     𝑈,
-    spectrum
+    spectrum,
+    FloquetGaugeField
 
 mutable struct GaugeField{Float<:AbstractFloat}
     ϵ::Float
     ϵc::Float
     χ::Float
+    δ::Tuple{Float,Float} # shift (δ𝑥, δ𝑦)
     H_rows::Vector{Int}
     H_cols::Vector{Int}
-    H_vals::Vector{Float}
+    H_vals::Vector{Complex{Float}}
 end
 
 """
 Construct a `GaugeField` object.
 `n_harmonics` is the number of positive harmonics; coordinates will be discretised using `2n_harmonics` points.
 """
-function GaugeField(ϵ::Float, ϵc::Real, χ::Real; n_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
-    gf = GaugeField(ϵ, Float(ϵc), Float(χ), Int[], Int[], Float[])
+function GaugeField(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}=(0, 0); n_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
+    gf = GaugeField(ϵ, Float(ϵc), Float(χ), Float.(δ), Int[], Int[], Complex{Float}[])
     constructH!(gf, n_harmonics, fft_threshold)
     return gf
 end
@@ -32,7 +34,7 @@ function 𝑈(gf::GaugeField{Float}, xs::AbstractVector{<:Real}, ys::AbstractVec
     for (iy, y) in enumerate(ys)
         for (ix, x) in enumerate(xs)
             β₋ = sin(x-y); β₊ = sin(x+y)
-            U[ix, iy] = (β₊^2 + (ϵc*β₋)^2) / 𝛼(gf, x, y)^2 * 2ϵ^2*(1+ϵc^2)
+            U[ix, iy] = (β₊^2 + (ϵc*β₋)^2) / 𝛼(gf, x, y)^2 * 2ϵ^2 * (1+ϵc^2)
         end
     end
     return U
@@ -47,7 +49,7 @@ end
 
 """
 Construct the Hamiltonian matrix by filling `gf.H_rows`, `gf.H_cols`, and `gf.H_vals`.
-`M` is the number of positive harmonics; coordinates will be discretised using 2M points.
+Coordinates will be discretised using 2M points.
 """
 function constructH!(gf::GaugeField{Float}, M::Integer, fft_threshold::Real) where {Float<:AbstractFloat}
     L = π # periodicity of the potential
@@ -63,8 +65,8 @@ function constructH!(gf::GaugeField{Float}, M::Integer, fft_threshold::Real) whe
     
     gf.H_rows = Vector{Int}(undef, n_elem)
     gf.H_cols = Vector{Int}(undef, n_elem)
-    gf.H_vals = Vector{Float}(undef, n_elem)
-    fft_to_matrix!(gf.H_rows, gf.H_cols, gf.H_vals, u)
+    gf.H_vals = Vector{Complex{Float}}(undef, n_elem)
+    fft_to_matrix!(gf.H_rows, gf.H_cols, gf.H_vals, u, gf.δ)
 
     # fill positions of the diagonal elements
     gf.H_rows[end-n_diag+1:end] .= 1:n_diag
@@ -114,34 +116,39 @@ function filter_count!(u::AbstractMatrix{<:Number}; factor::Real)
     return n_elem
 end
 
-"Based on results of a real 2D fft `u`, return `rows, cols, vals` tuple for constructing a sparse matrix."
-function fft_to_matrix!(rows, cols, vals, u)
-    M = size(u, 2) ÷ 2 # M/2 + 1 gives the size of each block; `size(u, 1)` gives the number of block-rows (= number of block-cols)
+"""
+Based on results of a real 2D fft `u`, return `rows, cols, vals` tuple for constructing a sparse matrix.
+Optionally, a tuple `δ` of shifts in 𝑥 and 𝑦 directions can be supplied.
+"""
+function fft_to_matrix!(rows, cols, vals, u, δ::Tuple{<:Real,<:Real})
+    L = π # periodicity of the potential
+    M = size(u, 2) ÷ 2 # M + 1 gives the size of each block; `size(u, 1)` gives the number of block-rows (= number of block-cols)
     counter = 1
 
     # it is assumed that u[1, 1] == 0 -- otherwise, one would also need to prevent double pushing of the diagonal elements
     for c_u in axes(u, 2), r_u in axes(u, 1) # iterate over columns and rows of `u`
         u[r_u, c_u] == 0 && continue
-        val = u[r_u, c_u]
+        e = c_u <= M ÷ 2 ? cispi(2/L*(r_u-1)*δ[1]) : cispi(2/L*(2M-r_u-1)*δ[1])
+        val = u[r_u, c_u] * e * cispi(2/L*(r_u-1)*δ[2])
         for r_b in r_u:size(u, 1) # a value from `r_u`th row of `u` will be put in block-rows of `H` from `r_u`th to `M+1`th. For actual applications, `size(u, 1) == M+1`
             c_b = r_b - r_u + 1 # block-column where to place the value
             if c_u <= M # for `c_u` ≤ `M`, the value from `c_u`th column of `u` will be put to the `c_u`th lower diagonal of the block
                 for (r, c) in zip(c_u:M+1, 1:M+2-c_u)
-                    push_vals!(rows, cols, vals, counter; r_b, c_b, r, c, M, val)
+                    push_vals!(rows, cols, vals, counter; r_b, c_b, r, c, blocksize=M+1, val)
                     counter += 2
                 end
             elseif c_u == M+1 # for `c_u` = `M+1`, the value from `c_u`th column of `u` will be put to lower left and upper right corners of the block
-                push_vals!(rows, cols, vals, counter; r_b, c_b, r=M+1, c=1, M, val)
+                push_vals!(rows, cols, vals, counter; r_b, c_b, r=M+1, c=1, blocksize=M+1, val)
                 counter += 2
                 if r_b != c_b
-                    push_vals!(rows, cols, vals, counter; r_b, c_b, r=1, c=M+1, M, val) # if we're in the diagonal block, then the upper right corner is conjugate to lower left and has already been pushed
+                    push_vals!(rows, cols, vals, counter; r_b, c_b, r=1, c=M+1, blocksize=M+1, val) # if we're in the diagonal block, then the upper right corner is conjugate to lower left and has already been pushed
                     counter += 2
                 end
             else # for `c_u` ≥ `M+2`, the value from `c_u`th column of `u` will be put to the `2M+2-c_u`th upper diagonal of the block
                 if r_b != c_b # if `r_b == c_b`, then upper diagonal of the block has already been filled by pushing the conjugate element
                     c_u_inv = 2M+2 - c_u
                     for (r, c) in zip(1:M+2-c_u_inv, c_u_inv:M+1)
-                        push_vals!(rows, cols, vals, counter; r_b, c_b, r, c, M, val)
+                        push_vals!(rows, cols, vals, counter; r_b, c_b, r, c, blocksize=M+1, val)
                         counter += 2
                     end
                 end
@@ -150,10 +157,13 @@ function fft_to_matrix!(rows, cols, vals, u)
     end
 end
 
-"Push `val` and its complex-conjugate."
-function push_vals!(rows, cols, vals, counter; r_b, c_b, r, c, M, val)
-    i = (r_b-1)*(M+1) + r
-    j = (c_b-1)*(M+1) + c
+"""
+Push value `val` stored at (`r`, `c`) in some matrix to the block (`r_b`, `c_b`) of a sparse matrix encoded in `rows`, `cols`, `vals`.
+`counter` shows where to push. The complex-conjugate element is also pushed.
+"""
+function push_vals!(rows, cols, vals, counter; r_b, c_b, r, c, blocksize, val)
+    i = (r_b-1)*blocksize + r
+    j = (c_b-1)*blocksize + c
     rows[counter] = i
     cols[counter] = j
     vals[counter] = val
@@ -185,6 +195,76 @@ function spectrum(gf::GaugeField{Float}, n_q::Integer) where {Float<:AbstractFlo
         E[i, j] = E[j, i] = vals[1]
     end
     return E
+end
+
+struct FloquetGaugeField{Float<:AbstractFloat}
+    Q_rows::Vector{Int}
+    Q_cols::Vector{Int}
+    Q_vals::Vector{Complex{Float}}
+    gaugefields::Vector{GaugeField{Float}}
+end
+
+function FloquetGaugeField(ϵ::Float, ϵc::Real, χ::Real, qx::Real, qy::Real; n_steps::Integer, n_floquet_harmonics=10, n_fourier_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
+    L = π # periodicity of the potential
+    δ = L / n_steps
+    gaugefields = Vector{GaugeField{Float}}(undef, n_steps^2)
+    M = n_fourier_harmonics + 1
+    for i in 0:n_steps-1, j in 0:n_steps-1
+        gf = GaugeField(ϵ, ϵc, χ, (δ*i, δ*j); n_harmonics=n_fourier_harmonics, fft_threshold)
+        diagidx = findall(==(Inf), gf.H_vals) # find indices of diagonal elements
+        for nx in 1:M, ny in 1:M
+            gf.H_vals[diagidx[(nx-1)M+ny]] = qx^2 + qy^2 + 4(qx*nx + qy*ny) + 4(nx^2 + ny^2)
+        end
+        gaugefields[i*n_steps+j+1] = gf
+    end
+    Q = constructQ(gaugefields, n_floquet_harmonics)
+    return FloquetGaugeField(Q..., gaugefields)
+end
+
+"Construct the quasienergy operator using harmonics from 0th to `M`th (and 0th to `-M`th)."
+function constructQ(gaugefields::Vector{GaugeField{Float}}, M::Integer) where Float<:AbstractFloat
+    blocksize = maximum(gaugefields[1].H_rows) # size of 𝐻
+    N = length(gaugefields) # number of steps in the driving sequence
+    n_elems = length(gaugefields[1].H_vals) * (M+1)^2 # total number of elements in 𝑄: (M+1)^2 blocks each holding `length(gaugefields[1].H_vals)` values
+    Q_rows = Vector{Int}(undef, n_elems)
+    Q_cols = Vector{Int}(undef, n_elems)
+    Q_vals = Vector{Complex{Float}}(undef, n_elems)
+    block_vals = copy(gaugefields[1].H_vals)
+    counter = 1
+    for i in eachindex(block_vals)
+        block_vals[i] = sum(gaugefields[j].H_vals[i] for j in 1:N)
+    end
+    fill_blockband!(Q_rows, Q_cols, Q_vals, gaugefields[1].H_rows, gaugefields[1].H_cols, block_vals, 0, blocksize, M+1, counter)
+    counter += (M+1) * length(gaugefields[1].H_vals)
+    for m in 1:M # for each block-off-diagonal band (= harmonic)
+        for i in eachindex(block_vals)
+            block_vals[i] = sum(gaugefields[j].H_vals[i] * cispi(-2m*j/N) for j in 1:N) * (cispi(2m/N)-1) / (2π*im*m)
+        end
+        fill_blockband!(Q_rows, Q_cols, Q_vals, gaugefields[1].H_rows, gaugefields[1].H_cols, block_vals, m, blocksize, M+1, counter)
+        counter += 2(M+1-m) * length(gaugefields[1].H_vals)
+    end
+    return Q_rows, Q_cols, Q_vals
+end
+
+"Fill the `m`th block-off-diagonal of `Q` with matrices `q`. `counter` shows where to start pushing."
+function fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, m, blocksize, nblockrows, counter)
+    if m == 0 # for the block-diagonal can't use `push_vals`
+        for i in eachindex(q_vals) # take a value and put it into all required blocks
+            for r_b in 1:nblockrows # for each diagonal block whose block-coordinates are (r_b, r_b)
+                Q_rows[counter] = (r_b-1)*blocksize + q_rows[i]
+                Q_cols[counter] = (r_b-1)*blocksize + q_cols[i]
+                Q_vals[counter] = q_vals[i]
+                counter += 1
+            end
+        end
+    else
+        for i in eachindex(q_vals) # take a value and put it into all required blocks
+            for (r_b, c_b) in zip(m+1:nblockrows, 1:nblockrows-m) # for each block whose block-coordinates are (r_b, c_b)
+                push_vals!(Q_rows, Q_cols, Q_vals, counter; r_b, c_b, r=q_rows[i], c=q_cols[i], blocksize, val=q_vals[i])
+                counter += 2
+            end
+        end
+    end
 end
 
 end
