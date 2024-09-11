@@ -49,7 +49,7 @@ end
 
 """
 Construct the Hamiltonian matrix by filling `gf.H_rows`, `gf.H_cols`, and `gf.H_vals`.
-Coordinates will be discretised using 2M points.
+Coordinates will be discretised using 2M points, yielding spatial harmonics from `-M`th to `M`th.
 """
 function constructH!(gf::GaugeField{Float}, M::Integer, fft_threshold::Real) where {Float<:AbstractFloat}
     L = π # periodicity of the potential
@@ -204,56 +204,61 @@ struct FloquetGaugeField{Float<:AbstractFloat}
     gaugefields::Vector{GaugeField{Float}}
 end
 
-function FloquetGaugeField(ϵ::Float, ϵc::Real, χ::Real, qx::Real, qy::Real; n_steps::Integer, n_floquet_harmonics=10, n_fourier_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
+"Construct a `FloquetGaugeField` object. The cell edges will be reduced `subfactor` times."
+function FloquetGaugeField(ϵ::Float, ϵc::Real, χ::Real, ω::Real, qx::Real, qy::Real; subfactor::Integer, n_floquet_harmonics=10, n_fourier_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
     L = π # periodicity of the potential
-    δ = L / n_steps
-    gaugefields = Vector{GaugeField{Float}}(undef, n_steps^2)
-    M = n_fourier_harmonics + 1
-    for i in 0:n_steps-1, j in 0:n_steps-1
+    δ = L / subfactor
+    gaugefields = Vector{GaugeField{Float}}(undef, subfactor^2)
+    M = n_fourier_harmonics + 1 # size of the blocks in 𝐻
+    for i in 0:subfactor-1, j in 0:subfactor-1
         gf = GaugeField(ϵ, ϵc, χ, (δ*i, δ*j); n_harmonics=n_fourier_harmonics, fft_threshold)
         diagidx = findall(==(Inf), gf.H_vals) # find indices of diagonal elements
         for nx in 1:M, ny in 1:M
             gf.H_vals[diagidx[(nx-1)M+ny]] = qx^2 + qy^2 + 4(qx*nx + qy*ny) + 4(nx^2 + ny^2)
         end
-        gaugefields[i*n_steps+j+1] = gf
+        gaugefields[i*subfactor+j+1] = gf
     end
-    Q = constructQ(gaugefields, n_floquet_harmonics)
+    Q = constructQ(gaugefields, ω, n_floquet_harmonics)
     return FloquetGaugeField(Q..., gaugefields)
 end
 
-"Construct the quasienergy operator using harmonics from 0th to `M`th (and 0th to `-M`th)."
-function constructQ(gaugefields::Vector{GaugeField{Float}}, M::Integer) where Float<:AbstractFloat
+"Construct the quasienergy operator using temporal harmonics from `-M`th to `M`th."
+function constructQ(gaugefields::Vector{GaugeField{Float}}, ω::Real, M::Integer) where Float<:AbstractFloat
     blocksize = maximum(gaugefields[1].H_rows) # size of 𝐻
     N = length(gaugefields) # number of steps in the driving sequence
     n_elems = length(gaugefields[1].H_vals) * (M+1)^2 # total number of elements in 𝑄: (M+1)^2 blocks each holding `length(gaugefields[1].H_vals)` values
     Q_rows = Vector{Int}(undef, n_elems)
     Q_cols = Vector{Int}(undef, n_elems)
     Q_vals = Vector{Complex{Float}}(undef, n_elems)
-    block_vals = copy(gaugefields[1].H_vals)
-    counter = 1
+    block_vals = similar(gaugefields[1].H_vals) # for storing summed stroboscopic drives
+    
+    # block-diagonal of 𝑄
     for i in eachindex(block_vals)
         block_vals[i] = sum(gaugefields[j].H_vals[i] for j in 1:N)
     end
-    fill_blockband!(Q_rows, Q_cols, Q_vals, gaugefields[1].H_rows, gaugefields[1].H_cols, block_vals, 0, blocksize, M+1, counter)
+    counter = 1
+    fill_blockband!(Q_rows, Q_cols, Q_vals, gaugefields[1].H_rows, gaugefields[1].H_cols, block_vals, 0, blocksize, M+1, counter, ω)
     counter += (M+1) * length(gaugefields[1].H_vals)
-    for m in 1:M # for each block-off-diagonal band (= harmonic)
+    # all remaining block-bands
+    for m in 1:M
         for i in eachindex(block_vals)
             block_vals[i] = sum(gaugefields[j].H_vals[i] * cispi(-2m*j/N) for j in 1:N) * (cispi(2m/N)-1) / (2π*im*m)
         end
-        fill_blockband!(Q_rows, Q_cols, Q_vals, gaugefields[1].H_rows, gaugefields[1].H_cols, block_vals, m, blocksize, M+1, counter)
+        fill_blockband!(Q_rows, Q_cols, Q_vals, gaugefields[1].H_rows, gaugefields[1].H_cols, block_vals, m, blocksize, M+1, counter, 0)
         counter += 2(M+1-m) * length(gaugefields[1].H_vals)
     end
     return Q_rows, Q_cols, Q_vals
 end
 
 "Fill the `m`th block-off-diagonal of `Q` with matrices `q`. `counter` shows where to start pushing."
-function fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, m, blocksize, nblockrows, counter)
+function fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, m, blocksize, nblockrows, counter, ω)
     if m == 0 # for the block-diagonal can't use `push_vals`
         for i in eachindex(q_vals) # take a value and put it into all required blocks
-            for r_b in 1:nblockrows # for each diagonal block whose block-coordinates are (r_b, r_b)
-                Q_rows[counter] = (r_b-1)*blocksize + q_rows[i]
-                Q_cols[counter] = (r_b-1)*blocksize + q_cols[i]
+            for r_b in 0:nblockrows-1 # for each diagonal block whose block-coordinates are (r_b, r_b)
+                Q_rows[counter] = r_b*blocksize + q_rows[i]
+                Q_cols[counter] = r_b*blocksize + q_cols[i]
                 Q_vals[counter] = q_vals[i]
+                q_rows[i] == q_cols[i] && (Q_vals[counter] += (r_b - nblockrows÷2) * ω)
                 counter += 1
             end
         end

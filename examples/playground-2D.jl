@@ -39,5 +39,6 @@ heatmap(E, c=CMAP)
 gf = GaugeField(ϵ, ϵc, χ; n_harmonics=2, fft_threshold=0.05)
 heatmap(abs.(sparse(gf.H_rows, gf.H_cols, gf.H_vals)), yaxis=:flip)
 
-fgf = FloquetGaugeField(ϵ, ϵc, χ, 0, 0; n_steps=2, n_floquet_harmonics=4, n_fourier_harmonics=2)
+ω = 1000
+fgf = FloquetGaugeField(ϵ, ϵc, χ, ω, 0, 0; subfactor=2, n_floquet_harmonics=3, n_fourier_harmonics=5)
 heatmap(abs.(sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals)), yaxis=:flip)
