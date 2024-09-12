@@ -7,7 +7,7 @@ export GaugeField,
     spectrum,
     FloquetGaugeField
 
-mutable struct GaugeField{Float<:AbstractFloat}
+struct GaugeField{Float<:AbstractFloat}
     ϵ::Float
     ϵc::Float
     χ::Float
@@ -23,27 +23,24 @@ Construct a `GaugeField` object.
 `n_harmonics` is the number of positive harmonics; coordinates will be discretised using `2n_harmonics` points.
 """
 function GaugeField(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}=(0, 0); n_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
-    gf = GaugeField(ϵ, Float(ϵc), Float(χ), Float.(δ), Float(0), Int[], Int[], Complex{Float}[])
-    constructH!(gf, n_harmonics, fft_threshold)
-    return gf
+    H, u₀₀ = constructH(ϵ, ϵc, χ, δ, n_harmonics, fft_threshold)
+    return GaugeField(ϵ, Float(ϵc), Float(χ), Float.(δ), u₀₀, H...)
 end
 
 "Return the 2D gauge potential 𝑈."
-function 𝑈(gf::GaugeField{Float}, xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}) where {Float<:AbstractFloat}
-    (;ϵ, ϵc) = gf
-    U = Matrix{Float}(undef, length(xs), length(ys))
+function 𝑈(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, ϵc::Real, χ::Real)
+    U = Matrix{typeof(ϵ)}(undef, length(xs), length(ys))
     for (iy, y) in enumerate(ys)
         for (ix, x) in enumerate(xs)
             β₋ = sin(x-y); β₊ = sin(x+y)
-            U[ix, iy] = (β₊^2 + (ϵc*β₋)^2) / 𝛼(gf, x, y)^2 * 2ϵ^2 * (1+ϵc^2)
+            U[ix, iy] = (β₊^2 + (ϵc*β₋)^2) / 𝛼(x, y; ϵ, ϵc, χ)^2 * 2ϵ^2 * (1+ϵc^2)
         end
     end
     return U
 end
 
 "Helper function for calculating the gauge potential 𝑈."
-function 𝛼(gf::GaugeField, x::Real, y::Real)
-    (;ϵ, ϵc, χ) = gf
+function 𝛼(x::Real, y::Real; ϵ, ϵc, χ)
     η₋ = cos(x-y); η₊ = cos(x+y)
     return ϵ^2 * (1 + ϵc^2) + η₊^2 + (ϵc*η₋)^2 - 2ϵc*η₊*η₋*cos(χ)  
 end
@@ -52,26 +49,28 @@ end
 Construct the Hamiltonian matrix by filling `gf.H_rows`, `gf.H_cols`, and `gf.H_vals`.
 Coordinates will be discretised using 2M points, yielding spatial harmonics from `-M`th to `M`th.
 """
-function constructH!(gf::GaugeField{Float}, M::Integer, fft_threshold::Real) where {Float<:AbstractFloat}
+function constructH(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}, M::Integer, fft_threshold::Real) where {Float<:AbstractFloat}
     L = π # periodicity of the potential
-    dx = L / 2M
+    dx = Float(L / 2M)
     x = range(0, L-dx, 2M)
-    U = 𝑈(gf, x, x) .* (dx/L)^2
+    U = 𝑈(x, x; ϵ, ϵc, χ) .* (dx/L)^2
     u = rfft(U) |> real # guaranteed to be real (and even) because `U` is real and even
     n_elem = filter_count!(u, factor=fft_threshold) # filter small values and calculate the number of elements in the final Hamiltonian
     
-    gf.H_rows = Vector{Int}(undef, n_elem)
-    gf.H_cols = Vector{Int}(undef, n_elem)
-    gf.H_vals = Vector{Complex{Float}}(undef, n_elem)
-    gf.u₀₀ = u[1, 1] # save the secular component
+    H_rows = Vector{Int}(undef, n_elem)
+    H_cols = Vector{Int}(undef, n_elem)
+    H_vals = Vector{Complex{Float}}(undef, n_elem)
+    u₀₀ = u[1, 1] # save the secular component.
     u[1, 1] = 0 # remove because it breaks the structure in `filter_count!` if included
-    fft_to_matrix!(gf.H_rows, gf.H_cols, gf.H_vals, u, gf.δ)
+    fft_to_matrix!(H_rows, H_cols, H_vals, u, δ)
     
     n_diag = (M+1)^2 # number of diagonal elements in 𝐻
     # fill positions of the diagonal elements
-    gf.H_rows[end-n_diag+1:end] .= 1:n_diag
-    gf.H_cols[end-n_diag+1:end] .= 1:n_diag
-    gf.H_vals[end-n_diag+1:end] .= Inf # push Inf's to later locate the diagonal values in `nonzeros(H)` easily
+    H_rows[end-n_diag+1:end] .= 1:n_diag
+    H_cols[end-n_diag+1:end] .= 1:n_diag
+    H_vals[end-n_diag+1:end] .= Inf # push Inf's to later locate the diagonal values in `nonzeros(H)` easily
+
+    return (H_rows, H_cols, H_vals), u₀₀
 end
 
 """

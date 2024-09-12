@@ -38,7 +38,7 @@ end
     M = 20
     dx = L / 2M
     x = range(0, L-dx, 2M)
-    U = 𝑈(gf, x, x) .* (dx/L)^2
+    U = 𝑈(x, x; ϵ, ϵc, χ) .* (dx/L)^2
     u = rfft(U)
     @test sum(abs.(imag.(u))) < 1e-10 # test that imaginary part is zero
 
@@ -56,21 +56,24 @@ end
     Q_rows = Vector{Int}(undef, (nblockrows * blocksize)^2)
     Q_cols = similar(Q_rows)
     Q_vals = similar(Q_rows)
+    ω = 10
+    # diagonal blocks
     counter = 1
-    GaugeFields.fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, 0, blocksize, nblockrows, counter)
+    GaugeFields.fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, 0, blocksize, nblockrows, counter, ω)
     counter += nblockrows * nelems
+    # off-diagonal blocks
     for m in 1:nblockrows-1
-        GaugeFields.fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, m, blocksize, nblockrows, counter)
+        GaugeFields.fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, m, blocksize, nblockrows, counter, 0)
         counter += 2(nblockrows-m) * nelems
     end
     Q = sparse(Q_rows, Q_cols, Q_vals)
     Q_true = [
-        1  2  1  3  1  3
-        3  4  2  4  2  4
-        1  2  1  2  1  3
-        3  4  3  4  2  4
-        1  2  1  2  1  2
-        3  4  3  4  3  4
+        1-ω  2    1  3  1    3
+        3    4-ω  2  4  2    4
+        1    2    1  2  1    3
+        3    4    3  4  2    4
+        1    2    1  2  1+ω  2
+        3    4    3  4  3    4+ω
     ]
     @test Q == Q_true
 end

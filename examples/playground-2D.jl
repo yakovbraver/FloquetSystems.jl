@@ -12,12 +12,14 @@ x = range(-0.1*2π, 2π*1.1, 500) # in units of 1/kᵣ
 χ = 0
 gf = GaugeField(ϵ, ϵc, χ; n_harmonics=5)
 
-U = 𝑈(gf, x, x)
-heatmap(x, x, U ./ (1/ϵ^2), c=CMAP, xlabel=L"x / (1/k_R)", ylabel=L"y / (1/k_R)")
+U = 𝑈(x, x; ϵ=Float32(ϵ), ϵc, χ)
+u = rfft(U) |> real
+uu = u[1, 1]
+heatmap(x, x, U, c=CMAP, xlabel=L"x / (1/k_R)", ylabel=L"y / (1/k_R)")
 plot(x, U[125, :] / 2pi, xlabel=L"x/a", legend=false)
 savefig("cut.pdf")
 
-# anti-clockwise shaking
+# anti-clockwise shaking``
 L = π # period of the structure
 n = 3 # make cell edge `n` times smaller
 Δδ = L/n
@@ -28,9 +30,8 @@ for j in 0:n-1, i in 0:n-1
 end
 heatmap(x, x, U ./ (1/ϵ^2), c=CMAP, xlabel=L"x / (1/k_R)", ylabel=L"y / (1/k_R)")
 
-gf = GaugeField(Float32(ϵ), ϵc, χ; n_harmonics=100, fft_threshold=0.01)
+@time GaugeField(Float32(ϵ), ϵc, χ; n_harmonics=50, fft_threshold=0.01);
 @time E = spectrum(gf, 10)
-@time E = spectrum(gf2, 10)
 heatmap(E, c=CMAP)
 
 ϵ = 0.1 # testing for Float64
