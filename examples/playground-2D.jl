@@ -37,9 +37,14 @@ heatmap(E, c=CMAP)
 ϵ = 0.1 # testing for Float64
 ϵc = 1
 χ = 0
-gf = GaugeField(ϵ, ϵc, χ; n_harmonics=2, fft_threshold=0.05)
-heatmap(abs.(sparse(gf.H_rows, gf.H_cols, gf.H_vals)), yaxis=:flip)
+gf = GaugeField(ϵ, ϵc, χ; n_harmonics=3, fft_threshold=0.05)
+H = sparse(gf.H_rows, gf.H_cols, gf.H_vals)
+heatmap(abs.(H), yaxis=:flip)
 
 ω = 1000
-fgf = FloquetGaugeField(ϵ, ϵc, χ, ω, 0, 0; subfactor=2, n_floquet_harmonics=3, n_fourier_harmonics=5)
-heatmap(abs.(sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals)), yaxis=:flip)
+@time fgf = FloquetGaugeField(Float32(ϵ), ϵc, χ; subfactor=2, n_floquet_harmonics=10, n_fourier_harmonics=50)
+target = 30
+qxs = [0]
+qys = [0]
+@time E = spectrum(fgf, ω, target, qxs, qys, 20);
+scatter(E[:, 1, 1])

@@ -40,7 +40,7 @@ function 𝑈(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, 
 end
 
 "Helper function for calculating the gauge potential 𝑈."
-function 𝛼(x::Real, y::Real; ϵ, ϵc, χ)
+function 𝛼(x::Real, y::Real; ϵ::Real, ϵc::Real, χ::Real)
     η₋ = cos(x-y); η₊ = cos(x+y)
     return ϵ^2 * (1 + ϵc^2) + η₊^2 + (ϵc*η₋)^2 - 2ϵc*η₊*η₋*cos(χ)  
 end
@@ -68,7 +68,7 @@ function constructH(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}, M:
     # fill positions of the diagonal elements
     H_rows[end-n_diag+1:end] .= 1:n_diag
     H_cols[end-n_diag+1:end] .= 1:n_diag
-    H_vals[end-n_diag+1:end] .= Inf # push Inf's to later locate the diagonal values in `nonzeros(H)` easily
+    H_vals[end-n_diag+1:end] .= 0 # mark with zeros to later locate the diagonal values in `nonzeros(H)` easily. `fft_to_matrix!` does not save the zero entries so that the only zeros will be the diagonal ones
 
     return (H_rows, H_cols, H_vals), u₀₀
 end
@@ -179,7 +179,7 @@ function spectrum(gf::GaugeField{Float}, n_q::Integer) where {Float<:AbstractFlo
 
     H = sparse(gf.H_rows, gf.H_cols, gf.H_vals)
     H_vals = nonzeros(H)
-    diagidx = findall(==(Inf), H_vals) # find indices of diagonal elements
+    diagidx = findall(==(0), H_vals) # find indices of diagonal elements -- we saved zeros there (see `constructH`)
 
     M = Int(√size(H, 1))
     qs = range(0, 1, length=n_q) # BZ is (-1 ≤ 𝑞ₓ, 𝑞𝑦 ≤ 1), but it's enough to consider a triangle 0 ≤ 𝑞ₓ ≤ 1, 0 ≤ 𝑞𝑦 ≤ 𝑞ₓ
@@ -198,29 +198,25 @@ struct FloquetGaugeField{Float<:AbstractFloat}
     Q_rows::Vector{Int}
     Q_cols::Vector{Int}
     Q_vals::Vector{Complex{Float}}
-    gaugefields::Vector{GaugeField{Float}}
+    u₀₀::Float # zeroth harmonic (= average) of 𝑈
+    blocksize::Int # size of 𝐻ₘ
+    M::Integer # Floquet harmonic number (will use temporal harmonics from `-M`th to `M`th.)
 end
 
-"Construct a `FloquetGaugeField` object. The cell edges will be reduced `subfactor` times."
-function FloquetGaugeField(ϵ::Float, ϵc::Real, χ::Real, ω::Real, qx::Real, qy::Real; subfactor::Integer, n_floquet_harmonics=10, n_fourier_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
+"Construct a `FloquetGaugeField` object. The cell edges will be reduced `subfactor` times. It is better to take even `n_floquet_harmonics`."
+function FloquetGaugeField(ϵ::Float, ϵc::Real, χ::Real; subfactor::Integer, n_floquet_harmonics=10, n_fourier_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
     L = π # periodicity of the potential
     δ = L / subfactor
     gaugefields = Vector{GaugeField{Float}}(undef, subfactor^2)
-    M = n_fourier_harmonics + 1 # size of the blocks in 𝐻
     for i in 0:subfactor-1, j in 0:subfactor-1
-        gf = GaugeField(ϵ, ϵc, χ, (δ*i, δ*j); n_harmonics=n_fourier_harmonics, fft_threshold)
-        diagidx = findall(==(Inf), gf.H_vals) # find indices of diagonal elements
-        for nx in 1:M, ny in 1:M
-            gf.H_vals[diagidx[(nx-1)M+ny]] = qx^2 + qy^2 + 4(qx*nx + qy*ny) + 4(nx^2 + ny^2)
-        end
-        gaugefields[i*subfactor+j+1] = gf
+        gaugefields[i*subfactor+j+1] = GaugeField(ϵ, ϵc, χ, (δ*i, δ*j); n_harmonics=n_fourier_harmonics, fft_threshold)
     end
-    Q = constructQ(gaugefields, ω, n_floquet_harmonics)
-    return FloquetGaugeField(Q..., gaugefields)
+    Q = constructQ(gaugefields, n_floquet_harmonics)
+    return FloquetGaugeField(Q..., gaugefields[1].u₀₀, (n_fourier_harmonics+1)^2, n_floquet_harmonics)
 end
 
 "Construct the quasienergy operator using temporal harmonics from `-M`th to `M`th."
-function constructQ(gaugefields::Vector{GaugeField{Float}}, ω::Real, M::Integer) where Float<:AbstractFloat
+function constructQ(gaugefields::Vector{GaugeField{Float}}, M::Integer) where Float<:AbstractFloat
     blocksize = maximum(gaugefields[1].H_rows) # size of 𝐻
     N = length(gaugefields) # number of steps in the driving sequence
     n_elems = length(gaugefields[1].H_vals) * (M+1)^2 # total number of elements in 𝑄: (M+1)^2 blocks each holding `length(gaugefields[1].H_vals)` values
@@ -231,31 +227,34 @@ function constructQ(gaugefields::Vector{GaugeField{Float}}, ω::Real, M::Integer
     
     # block-diagonal of 𝑄
     for i in eachindex(block_vals)
-        block_vals[i] = sum(gaugefields[j].H_vals[i] for j in 1:N)
+        if gaugefields[1].H_vals[i] == 0 # will be true if this is a diagonal value
+            block_vals[i] = Inf # mark this element to later find diagonal elements of 𝑄
+        else
+            block_vals[i] = sum(gaugefields[j].H_vals[i] for j in 1:N)
+        end
     end
     counter = 1
-    fill_blockband!(Q_rows, Q_cols, Q_vals, gaugefields[1].H_rows, gaugefields[1].H_cols, block_vals, 0, blocksize, M+1, counter, ω)
+    fill_blockband!(Q_rows, Q_cols, Q_vals, gaugefields[1].H_rows, gaugefields[1].H_cols, block_vals, 0, blocksize, M+1, counter)
     counter += (M+1) * length(gaugefields[1].H_vals)
     # all remaining block-bands
     for m in 1:M
         for i in eachindex(block_vals)
             block_vals[i] = sum(gaugefields[j].H_vals[i] * cispi(-2m*j/N) for j in 1:N) * (cispi(2m/N)-1) / (2π*im*m)
         end
-        fill_blockband!(Q_rows, Q_cols, Q_vals, gaugefields[1].H_rows, gaugefields[1].H_cols, block_vals, m, blocksize, M+1, counter, 0)
+        fill_blockband!(Q_rows, Q_cols, Q_vals, gaugefields[1].H_rows, gaugefields[1].H_cols, block_vals, m, blocksize, M+1, counter)
         counter += 2(M+1-m) * length(gaugefields[1].H_vals)
     end
     return Q_rows, Q_cols, Q_vals
 end
 
 "Fill the `m`th block-off-diagonal of `Q` with matrices `q`. `counter` shows where to start pushing."
-function fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, m, blocksize, nblockrows, counter, ω)
+function fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, m, blocksize, nblockrows, counter)
     if m == 0 # for the block-diagonal can't use `push_vals`
         for i in eachindex(q_vals) # take a value and put it into all required blocks
             for r_b in 0:nblockrows-1 # for each diagonal block whose block-coordinates are (r_b, r_b)
                 Q_rows[counter] = r_b*blocksize + q_rows[i]
                 Q_cols[counter] = r_b*blocksize + q_cols[i]
                 Q_vals[counter] = q_vals[i]
-                q_rows[i] == q_cols[i] && (Q_vals[counter] += (r_b - nblockrows÷2) * ω)
                 counter += 1
             end
         end
@@ -267,6 +266,30 @@ function fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, m, bloc
             end
         end
     end
+end
+
+"""
+Calculate `nE` quasienergies closest to `target` for momenta `qx` and `qy`, at driving frequency `ω`.
+"""
+function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, target::Real, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}, nE::Integer)  where {Float<:AbstractFloat}
+    E = Array{Float,3}(undef, nE, length(qxs), length(qys))
+    
+    Q = sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals)
+    Q_vals = nonzeros(Q)
+    diagidx = findall(==(Inf), Q_vals) # find indices of diagonal elements -- we saved Inf's there (see `constructH`)
+    diagonal = Vector{Float}(undef, fgf.blocksize) # 𝑞-dependent diagonal of each diagonal block
+    B = Int(√fgf.blocksize) # = max Fourier harmonic + 1
+    for (j, qx) in enumerate(qxs), (i, qy) in enumerate(qys)
+        for nx in 1:B, ny in 1:B
+            diagonal[(nx-1)B+ny] = fgf.u₀₀ + qx^2 + qy^2 + 4(qx*nx + qy*ny) + 4(nx^2 + ny^2)
+        end
+        for r_b in 1:fgf.M+1
+            Q_vals[diagidx[(r_b-1)fgf.blocksize+1:r_b*fgf.blocksize]] .= diagonal .+ (r_b - (fgf.M+1)÷2) * ω
+        end
+        vals, _, _ = eigsolve(Q, nE, EigSorter(x -> abs(x - target); rev=false), tol=(Float == Float32 ? 1e-6 : 1e-12))
+        E[:, i, j] = vals[1:nE]
+    end
+    return E
 end
 
 end
