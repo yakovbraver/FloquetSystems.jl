@@ -12,6 +12,7 @@ mutable struct GaugeField{Float<:AbstractFloat}
     ϵc::Float
     χ::Float
     δ::Tuple{Float,Float} # shift (δ𝑥, δ𝑦)
+    u₀₀::Float # zeroth harmonic (= average) of 𝑈
     H_rows::Vector{Int}
     H_cols::Vector{Int}
     H_vals::Vector{Complex{Float}}
@@ -22,7 +23,7 @@ Construct a `GaugeField` object.
 `n_harmonics` is the number of positive harmonics; coordinates will be discretised using `2n_harmonics` points.
 """
 function GaugeField(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}=(0, 0); n_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
-    gf = GaugeField(ϵ, Float(ϵc), Float(χ), Float.(δ), Int[], Int[], Complex{Float}[])
+    gf = GaugeField(ϵ, Float(ϵc), Float(χ), Float.(δ), Float(0), Int[], Int[], Complex{Float}[])
     constructH!(gf, n_harmonics, fft_threshold)
     return gf
 end
@@ -57,17 +58,16 @@ function constructH!(gf::GaugeField{Float}, M::Integer, fft_threshold::Real) whe
     x = range(0, L-dx, 2M)
     U = 𝑈(gf, x, x) .* (dx/L)^2
     u = rfft(U) |> real # guaranteed to be real (and even) because `U` is real and even
-    u[1, 1] = 0 # remove the secular component -- it has no physical significance but breaks the structure in `filter_count!` if included
     n_elem = filter_count!(u, factor=fft_threshold) # filter small values and calculate the number of elements in the final Hamiltonian
-    
-    n_diag = (M+1)^2 # number of diagonal elements in 𝐻
-    n_elem += n_diag # reserve space for the diagonal elements coming from the other terms of the Hamiltonian
     
     gf.H_rows = Vector{Int}(undef, n_elem)
     gf.H_cols = Vector{Int}(undef, n_elem)
     gf.H_vals = Vector{Complex{Float}}(undef, n_elem)
+    gf.u₀₀ = u[1, 1] # save the secular component
+    u[1, 1] = 0 # remove because it breaks the structure in `filter_count!` if included
     fft_to_matrix!(gf.H_rows, gf.H_cols, gf.H_vals, u, gf.δ)
-
+    
+    n_diag = (M+1)^2 # number of diagonal elements in 𝐻
     # fill positions of the diagonal elements
     gf.H_rows[end-n_diag+1:end] .= 1:n_diag
     gf.H_cols[end-n_diag+1:end] .= 1:n_diag
@@ -89,10 +89,8 @@ function filter_count!(u::AbstractMatrix{<:Number}; factor::Real)
         if abs(u[r, c]) < factor * max_u
             u[r, c] = 0
         else
-            if c == 1
+            if c < M+1
                 n_elem += (N - (r-1)) * (M+1 - (c-1)) # number of blocks in which `u[r, c]` will appear × number of times it will appear within each block
-            elseif c < M+1
-                n_elem += (N - (r-1)) * (M+1 - (c-1))
             elseif c == M+1
                 n_elem += 2(N - (r-1)) * (M+1 - (c-1))
             else
@@ -189,7 +187,7 @@ function spectrum(gf::GaugeField{Float}, n_q::Integer) where {Float<:AbstractFlo
     for (j, qx) in enumerate(qs), i in j:n_q
         qy = qs[i]
         for nx in 1:M, ny in 1:M
-            H_vals[diagidx[(nx-1)M+ny]] = qx^2 + qy^2 + 4(qx*nx + qy*ny) + 4(nx^2 + ny^2)
+            H_vals[diagidx[(nx-1)M+ny]] = gf.u₀₀ + qx^2 + qy^2 + 4(qx*nx + qy*ny) + 4(nx^2 + ny^2)
         end
         vals, _, _ = eigsolve(H, 1, :SR, tol=(Float == Float32 ? 1e-6 : 1e-12))
         E[i, j] = E[j, i] = vals[1]
