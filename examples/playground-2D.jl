@@ -7,7 +7,7 @@ plotlyjs()
 theme(:dark, size=(800, 600))
 
 x = range(-0.1*2π, 2π*1.1, 500) # in units of 1/kᵣ
-ϵ = 0.1
+ϵ = 0.1f0
 ϵc = 1
 χ = 0
 gf = GaugeField(ϵ, ϵc, χ; n_harmonics=5)
@@ -30,21 +30,37 @@ for j in 0:n-1, i in 0:n-1
 end
 heatmap(x, x, U ./ (1/ϵ^2), c=CMAP, xlabel=L"x / (1/k_R)", ylabel=L"y / (1/k_R)")
 
-@time GaugeField(Float32(ϵ), ϵc, χ; n_harmonics=50, fft_threshold=0.01);
+@time GaugeField(ϵ, ϵc, χ; n_harmonics=30, fft_threshold=0.01);
 @time E = spectrum(gf, 10)
 heatmap(E, c=CMAP)
 
-ϵ = 0.1 # testing for Float64
+ϵ = 0.1f0 # testing for Float64
 ϵc = 1
 χ = 0
-gf = GaugeField(ϵ, ϵc, χ; n_harmonics=3, fft_threshold=0.05)
+gf = GaugeField(ϵ, ϵc, χ; n_harmonics=50, fft_threshold=1e-2)
 H = sparse(gf.H_rows, gf.H_cols, gf.H_vals)
-heatmap(abs.(H), yaxis=:flip)
+heatmap(abs.(H), c=CMAP, yaxis=:flip, title="H")
+qxs = range(-1, 1, 50)
+qys = [0]
+@time E = GaugeFields.spectrum(gf, qxs, qys)
+scatter(qxs, E[:, 1], c=1, markerstrokewidth=0, markersize=2, legend=false)
+
+n_q = 5; qs = range(0, 1, n_q)
+@time E = GaugeFields.spectrum(gf; n_q);
+heatmap(qs, qs, E, c=CMAP)
 
 ω = 1000
-@time fgf = FloquetGaugeField(Float32(ϵ), ϵc, χ; subfactor=2, n_floquet_harmonics=10, n_fourier_harmonics=50)
-target = 30
-qxs = [0]
+@time fgf = FloquetGaugeField(ϵ, ϵc, χ; subfactor=1, n_floquet_harmonics=0, n_fourier_harmonics=50, fft_threshold=1e-2)
+Q = sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals)
+heatmap(abs.(Q), c=CMAP, yaxis=:flip, title="Q")
+Q[diagind(Q)] .= 0
+
+target = 2
+qxs = range(-1, 1, 50)
 qys = [0]
-@time E = spectrum(fgf, ω, target, qxs, qys, 20);
-scatter(E[:, 1, 1])
+@time E = spectrum(fgf, ω, target, qxs, qys; nsaves=2);
+fig = plot();
+for i in axes(E, 2)
+    scatter!(fill(i, size(E, 1)), E[:, i, 1], c=1, markerstrokewidth=0, markersize=2, legend=false)
+end
+fig

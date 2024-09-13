@@ -171,25 +171,48 @@ function push_vals!(rows, cols, vals, counter; r_b, c_b, r, c, blocksize, val)
 end
 
 """
-Calculate ground state energies.
-Return the enegy matrix for a quarter of the BZ, since ℤ₄ symmetry is assumed.
+Calculate ground state energy dispersion for a quarter of the BZ, since ℤ₄ symmetry is assumed.
+This quarter is discretised with `n_q` points in each direction.
 """
-function spectrum(gf::GaugeField{Float}, n_q::Integer) where {Float<:AbstractFloat}
+function spectrum(gf::GaugeField{Float}; n_q::Integer) where {Float<:AbstractFloat}
     E = Matrix{Float}(undef, n_q, n_q)
 
     H = sparse(gf.H_rows, gf.H_cols, gf.H_vals)
     H_vals = nonzeros(H)
     diagidx = findall(==(0), H_vals) # find indices of diagonal elements -- we saved zeros there (see `constructH`)
 
-    M = Int(√size(H, 1))
+    M = Int(√size(H, 1)) # size of each block in `H`
+    j_max = (M - 1) ÷ 2  # index for each block in `H` will run in `-j_max:j_max`, giving `M` values in total
     qs = range(0, 1, length=n_q) # BZ is (-1 ≤ 𝑞ₓ, 𝑞𝑦 ≤ 1), but it's enough to consider a triangle 0 ≤ 𝑞ₓ ≤ 1, 0 ≤ 𝑞𝑦 ≤ 𝑞ₓ
-    for (j, qx) in enumerate(qs), i in j:n_q
-        qy = qs[i]
-        for nx in 1:M, ny in 1:M
-            H_vals[diagidx[(nx-1)M+ny]] = gf.u₀₀ + qx^2 + qy^2 + 4(qx*nx + qy*ny) + 4(nx^2 + ny^2)
+    for (iqx, qx) in enumerate(qs), iqy in iqx:n_q
+        qy = qs[iqy]
+        for (j, jx) in enumerate(-j_max:j_max), (i, jy) in enumerate(-j_max:j_max)
+            H_vals[diagidx[(j-1)M+i]] = gf.u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2)
         end
         vals, _, _ = eigsolve(H, 1, :SR, tol=(Float == Float32 ? 1e-6 : 1e-12))
-        E[i, j] = E[j, i] = vals[1]
+        E[iqy, iqx] = E[iqx, iqy] = vals[1]
+    end
+    return E
+end
+
+"""
+Calculate ground state energy dispersion for all pairs of quasimomenta described by `qxs` and `qys`.
+"""
+function spectrum(gf::GaugeField{Float}, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}) where {Float<:AbstractFloat}
+    E = Matrix{Float}(undef, length(qxs), length(qys))
+
+    H = sparse(gf.H_rows, gf.H_cols, gf.H_vals)
+    H_vals = nonzeros(H)
+    diagidx = findall(==(0), H_vals) # find indices of diagonal elements -- we saved zeros there (see `constructH`)
+
+    M = Int(√size(H, 1)) # size of each block in `H`
+    j_max = (M - 1) ÷ 2  # index for each block in `H` will run in `-j_max:j_max`, giving `M` values in total
+    for (iqy, qy) in enumerate(qys), (iqx, qx) in enumerate(qxs)
+        for (j, jx) in enumerate(-j_max:j_max), (i, jy) in enumerate(-j_max:j_max)
+            H_vals[diagidx[(j-1)M+i]] = gf.u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2)
+        end
+        vals, _, _ = eigsolve(H, 1, :SR, tol=(Float == Float32 ? 1e-6 : 1e-12))
+        E[iqx, iqy] = vals[1]
     end
     return E
 end
@@ -207,10 +230,7 @@ end
 function FloquetGaugeField(ϵ::Float, ϵc::Real, χ::Real; subfactor::Integer, n_floquet_harmonics=10, n_fourier_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
     L = π # periodicity of the potential
     δ = L / subfactor
-    gaugefields = Vector{GaugeField{Float}}(undef, subfactor^2)
-    for i in 0:subfactor-1, j in 0:subfactor-1
-        gaugefields[i*subfactor+j+1] = GaugeField(ϵ, ϵc, χ, (δ*i, δ*j); n_harmonics=n_fourier_harmonics, fft_threshold)
-    end
+    gaugefields = [GaugeField(ϵ, ϵc, χ, (δ*i, δ*j); n_harmonics=n_fourier_harmonics, fft_threshold) for i in 0:subfactor-1 for j in 0:subfactor-1]
     Q = constructQ(gaugefields, n_floquet_harmonics)
     return FloquetGaugeField(Q..., gaugefields[1].u₀₀, (n_fourier_harmonics+1)^2, n_floquet_harmonics)
 end
@@ -269,25 +289,27 @@ function fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, m, bloc
 end
 
 """
-Calculate `nE` quasienergies closest to `target` for momenta `qx` and `qy`, at driving frequency `ω`.
+Calculate `nsaves` quasienergies closest to `E_target` for quasimomenta `qx` and `qy`, at driving frequency `ω`.
 """
-function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, target::Real, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}, nE::Integer)  where {Float<:AbstractFloat}
-    E = Array{Float,3}(undef, nE, length(qxs), length(qys))
+function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}; nsaves::Integer)  where {Float<:AbstractFloat}
+    E = Array{Float,3}(undef, nsaves, length(qxs), length(qys))
     
     Q = sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals)
     Q_vals = nonzeros(Q)
     diagidx = findall(==(Inf), Q_vals) # find indices of diagonal elements -- we saved Inf's there (see `constructH`)
     diagonal = Vector{Float}(undef, fgf.blocksize) # 𝑞-dependent diagonal of each diagonal block
-    B = Int(√fgf.blocksize) # = max Fourier harmonic + 1
-    for (j, qx) in enumerate(qxs), (i, qy) in enumerate(qys)
-        for nx in 1:B, ny in 1:B
-            diagonal[(nx-1)B+ny] = fgf.u₀₀ + qx^2 + qy^2 + 4(qx*nx + qy*ny) + 4(nx^2 + ny^2)
+    
+    M = Int(√fgf.blocksize) # size of each block in `H`
+    j_max = (M - 1) ÷ 2  # index for each block in `H` runs in `-j_max:j_max`, giving `M` values in total
+    for (iqy, qy) in enumerate(qys), (iqx, qx) in enumerate(qxs)
+        for (j, jx) in enumerate(-j_max:j_max), (i, jy) in enumerate(-j_max:j_max)
+            diagonal[(j-1)M+i] = fgf.u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2)
         end
         for r_b in 1:fgf.M+1
             Q_vals[diagidx[(r_b-1)fgf.blocksize+1:r_b*fgf.blocksize]] .= diagonal .+ (r_b - (fgf.M+1)÷2) * ω
         end
-        vals, _, _ = eigsolve(Q, nE, EigSorter(x -> abs(x - target); rev=false), tol=(Float == Float32 ? 1e-6 : 1e-12))
-        E[:, i, j] = vals[1:nE]
+        vals, _, _ = eigsolve(Q, nsaves, EigSorter(x -> abs(x - E_target); rev=false), tol=(Float == Float32 ? 1e-6 : 1e-12))
+        E[:, iqx, iqy] = vals[1:nsaves]
     end
     return E
 end
