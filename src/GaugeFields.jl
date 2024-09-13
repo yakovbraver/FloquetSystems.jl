@@ -23,6 +23,10 @@ Construct a `GaugeField` object.
 `n_harmonics` is the number of positive harmonics; coordinates will be discretised using `2n_harmonics` points.
 """
 function GaugeField(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}=(0, 0); n_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
+    if isodd(n_harmonics)
+        @warn "`n_harmonics` must be even. Reducing `n_harmonics` by one."
+        n_harmonics -= 1
+    end
     H, u₀₀ = constructH(ϵ, ϵc, χ, δ, n_harmonics, fft_threshold)
     return GaugeField(ϵ, Float(ϵc), Float(χ), Float.(δ), u₀₀, H...)
 end
@@ -48,6 +52,7 @@ end
 """
 Construct the Hamiltonian matrix by filling `gf.H_rows`, `gf.H_cols`, and `gf.H_vals`.
 Coordinates will be discretised using 2M points, yielding spatial harmonics from `-M`th to `M`th.
+The resulting Hamiltonian will be (M+1) × (M+1).
 """
 function constructH(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}, M::Integer, fft_threshold::Real) where {Float<:AbstractFloat}
     L = π # periodicity of the potential
@@ -181,13 +186,13 @@ function spectrum(gf::GaugeField{Float}; n_q::Integer) where {Float<:AbstractFlo
     H_vals = nonzeros(H)
     diagidx = findall(==(0), H_vals) # find indices of diagonal elements -- we saved zeros there (see `constructH`)
 
-    M = Int(√size(H, 1)) # size of each block in `H`
-    j_max = (M - 1) ÷ 2  # index for each block in `H` will run in `-j_max:j_max`, giving `M` values in total
+    B = Int(√size(H, 1)) # size of each block in `H`
+    j_max = (B - 1) ÷ 2  # index for each block in `H` will run in `-j_max:j_max`, giving `B` values in total
     qs = range(0, 1, length=n_q) # BZ is (-1 ≤ 𝑞ₓ, 𝑞𝑦 ≤ 1), but it's enough to consider a triangle 0 ≤ 𝑞ₓ ≤ 1, 0 ≤ 𝑞𝑦 ≤ 𝑞ₓ
     for (iqx, qx) in enumerate(qs), iqy in iqx:n_q
         qy = qs[iqy]
         for (j, jx) in enumerate(-j_max:j_max), (i, jy) in enumerate(-j_max:j_max)
-            H_vals[diagidx[(j-1)M+i]] = gf.u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2)
+            H_vals[diagidx[(j-1)B+i]] = gf.u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2)
         end
         vals, _, _ = eigsolve(H, 1, :SR, tol=(Float == Float32 ? 1e-6 : 1e-12))
         E[iqy, iqx] = E[iqx, iqy] = vals[1]
@@ -227,15 +232,26 @@ struct FloquetGaugeField{Float<:AbstractFloat}
 end
 
 "Construct a `FloquetGaugeField` object. The cell edges will be reduced `subfactor` times. It is better to take even `n_floquet_harmonics`."
-function FloquetGaugeField(ϵ::Float, ϵc::Real, χ::Real; subfactor::Integer, n_floquet_harmonics=10, n_fourier_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
+function FloquetGaugeField(ϵ::Float, ϵc::Real, χ::Real; subfactor::Integer, n_floquet_harmonics=10, n_spatial_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
+    if isodd(n_spatial_harmonics)
+        @warn "`n_spatial_harmonics` must be even. Reducing `n_spatial_harmonics` by one."
+        n_spatial_harmonics -= 1
+    end
+    if isodd(n_floquet_harmonics)
+        @warn "`n_floquet_harmonics` must be even. Reducing `n_floquet_harmonics` by one."
+        n_floquet_harmonics -= 1
+    end
     L = π # periodicity of the potential
     δ = L / subfactor
-    gaugefields = [GaugeField(ϵ, ϵc, χ, (δ*i, δ*j); n_harmonics=n_fourier_harmonics, fft_threshold) for i in 0:subfactor-1 for j in 0:subfactor-1]
+    gaugefields = [GaugeField(ϵ, ϵc, χ, (δ*i, δ*j); n_harmonics=n_spatial_harmonics, fft_threshold) for i in 0:subfactor-1 for j in 0:subfactor-1]
     Q = constructQ(gaugefields, n_floquet_harmonics)
-    return FloquetGaugeField(Q..., gaugefields[1].u₀₀, (n_fourier_harmonics+1)^2, n_floquet_harmonics)
+    return FloquetGaugeField(Q..., gaugefields[1].u₀₀, (n_spatial_harmonics+1)^2, n_floquet_harmonics)
 end
 
-"Construct the quasienergy operator using temporal harmonics from `-M`th to `M`th."
+"""
+Construct the quasienergy operator using temporal harmonics from `-M`th to `M`th."
+The resulting Hamiltonian will have M+1 blocks.
+"""
 function constructQ(gaugefields::Vector{GaugeField{Float}}, M::Integer) where Float<:AbstractFloat
     blocksize = maximum(gaugefields[1].H_rows) # size of 𝐻
     N = length(gaugefields) # number of steps in the driving sequence
@@ -301,12 +317,13 @@ function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::
     
     M = Int(√fgf.blocksize) # size of each block in `H`
     j_max = (M - 1) ÷ 2  # index for each block in `H` runs in `-j_max:j_max`, giving `M` values in total
+    m_max = fgf.M ÷ 2
     for (iqy, qy) in enumerate(qys), (iqx, qx) in enumerate(qxs)
         for (j, jx) in enumerate(-j_max:j_max), (i, jy) in enumerate(-j_max:j_max)
             diagonal[(j-1)M+i] = fgf.u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2)
         end
-        for r_b in 1:fgf.M+1
-            Q_vals[diagidx[(r_b-1)fgf.blocksize+1:r_b*fgf.blocksize]] .= diagonal .+ (r_b - (fgf.M+1)÷2) * ω
+        for (r_b, m) in enumerate(-m_max:m_max)
+            Q_vals[diagidx[(r_b-1)fgf.blocksize+1:r_b*fgf.blocksize]] .= diagonal .+ m * ω
         end
         vals, _, _ = eigsolve(Q, nsaves, EigSorter(x -> abs(x - E_target); rev=false), tol=(Float == Float32 ? 1e-6 : 1e-12))
         E[:, iqx, iqy] = vals[1:nsaves]
