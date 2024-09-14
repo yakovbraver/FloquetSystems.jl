@@ -1,6 +1,7 @@
 module GaugeFields
 
 using FFTW, SparseArrays, KrylovKit
+using LinearAlgebra: eigvals
 
 export GaugeField,
     𝑈,
@@ -266,7 +267,7 @@ function constructQ(gaugefields::Vector{GaugeField{Float}}, M::Integer) where Fl
         if gaugefields[1].H_vals[i] == 0 # will be true if this is a diagonal value
             block_vals[i] = Inf # mark this element to later find diagonal elements of 𝑄
         else
-            block_vals[i] = sum(gaugefields[j].H_vals[i] for j in 1:N)
+            block_vals[i] = sum(gaugefields[j].H_vals[i] for j in 1:N) / N
         end
     end
     counter = 1
@@ -325,8 +326,10 @@ function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::
         for (r_b, m) in enumerate(-m_max:m_max)
             Q_vals[diagidx[(r_b-1)fgf.blocksize+1:r_b*fgf.blocksize]] .= diagonal .+ m * ω
         end
-        vals, _, _ = eigsolve(Q, nsaves, EigSorter(x -> abs(x - E_target); rev=false), tol=(Float == Float32 ? 1e-6 : 1e-12))
-        E[:, iqx, iqy] = vals[1:nsaves]
+        vals = eigvals(Matrix(Q))
+        sort!(vals, by=x -> abs(x - E_target))
+        # vals, _, _ = eigsolve(Q, nsaves, EigSorter(x -> abs(x - E_target); rev=false), tol=(Float == Float32 ? 1e-6 : 1e-12))
+        E[:, iqx, iqy] .= vals[1:nsaves]
     end
     return E
 end
