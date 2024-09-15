@@ -1,7 +1,7 @@
 module GaugeFields
 
 using FFTW, SparseArrays, KrylovKit
-using LinearAlgebra: eigvals
+using LinearAlgebra: eigvals, Hermitian
 
 export GaugeField,
     𝑈,
@@ -57,7 +57,7 @@ The resulting Hamiltonian will be (M+1) × (M+1).
 """
 function constructH(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}, M::Integer, fft_threshold::Real) where {Float<:AbstractFloat}
     L = π # periodicity of the potential
-    dx = Float(L / 2M)
+    dx = Float(L / 2M) # without a cast, `U` below will always be Float64 
     x = range(0, L-dx, 2M)
     U = 𝑈(x, x; ϵ, ϵc, χ) .* (dx/L)^2
     u = rfft(U) |> real # guaranteed to be real (and even) because `U` is real and even
@@ -131,7 +131,7 @@ function fft_to_matrix!(rows, cols, vals, u, δ::Tuple{<:Real,<:Real})
     # it is assumed that u[1, 1] == 0 -- otherwise, one would also need to prevent double pushing of the diagonal elements
     for c_u in axes(u, 2), r_u in axes(u, 1) # iterate over columns and rows of `u`
         u[r_u, c_u] == 0 && continue
-        e = c_u <= M ÷ 2 ? cispi(2/L*(r_u-1)*δ[1]) : cispi(2/L*(2M-r_u-1)*δ[1])
+        e = c_u <= M+1 ? cispi(2/L*(c_u-1)*δ[1]) : cispi(2/L*(c_u-(2M+1))*δ[1])
         val = u[r_u, c_u] * e * cispi(2/L*(r_u-1)*δ[2])
         for r_b in r_u:size(u, 1) # a value from `r_u`th row of `u` will be put in block-rows of `H` from `r_u`th to `M+1`th. For actual applications, `size(u, 1) == M+1`
             c_b = r_b - r_u + 1 # block-column where to place the value
@@ -202,10 +202,10 @@ function spectrum(gf::GaugeField{Float}; n_q::Integer) where {Float<:AbstractFlo
 end
 
 """
-Calculate ground state energy dispersion for all pairs of quasimomenta described by `qxs` and `qys`.
+Calculate energy dispersion for `nstates` lowest states for all pairs of quasimomenta described by `qxs` and `qys`.
 """
-function spectrum(gf::GaugeField{Float}, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}) where {Float<:AbstractFloat}
-    E = Matrix{Float}(undef, length(qxs), length(qys))
+function spectrum(gf::GaugeField{Float}, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}; nsaves::Integer) where {Float<:AbstractFloat}
+    E = Array{Float}(undef, nsaves, length(qxs), length(qys))
 
     H = sparse(gf.H_rows, gf.H_cols, gf.H_vals)
     H_vals = nonzeros(H)
@@ -217,8 +217,9 @@ function spectrum(gf::GaugeField{Float}, qxs::AbstractVector{<:Real}, qys::Abstr
         for (j, jx) in enumerate(-j_max:j_max), (i, jy) in enumerate(-j_max:j_max)
             H_vals[diagidx[(j-1)M+i]] = gf.u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2)
         end
-        vals, _, _ = eigsolve(H, 1, :SR, tol=(Float == Float32 ? 1e-6 : 1e-12))
-        E[iqx, iqy] = vals[1]
+        # vals, _, _ = eigsolve(H, nsaves, :SR, tol=(Float == Float32 ? 1e-6 : 1e-12))
+        vals = eigvals(Hermitian(Matrix(H)))
+        E[:, iqx, iqy] = vals[1:nsaves]
     end
     return E
 end
@@ -326,10 +327,11 @@ function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::
         for (r_b, m) in enumerate(-m_max:m_max)
             Q_vals[diagidx[(r_b-1)fgf.blocksize+1:r_b*fgf.blocksize]] .= diagonal .+ m * ω
         end
-        vals = eigvals(Matrix(Q))
+        vals = eigvals(Hermitian(Matrix(Q)))
         sort!(vals, by=x -> abs(x - E_target))
         # vals, _, _ = eigsolve(Q, nsaves, EigSorter(x -> abs(x - E_target); rev=false), tol=(Float == Float32 ? 1e-6 : 1e-12))
         E[:, iqx, iqy] .= vals[1:nsaves]
+        println(iqx)
     end
     return E
 end
