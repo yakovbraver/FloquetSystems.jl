@@ -1,7 +1,7 @@
 module GaugeFields
 
-using FFTW, SparseArrays, KrylovKit
-using LinearAlgebra: eigvals, Hermitian
+using FFTW, SparseArrays, Arpack, KrylovKit, DelimitedFiles
+using LinearAlgebra: eigvals, Hermitian, diagind, eigen
 
 export GaugeField,
     𝑈,
@@ -195,10 +195,41 @@ function spectrum(gf::GaugeField{Float}; n_q::Integer) where {Float<:AbstractFlo
         for (j, jx) in enumerate(-j_max:j_max), (i, jy) in enumerate(-j_max:j_max)
             H_vals[diagidx[(j-1)B+i]] = gf.u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2)
         end
-        vals, _, _ = eigsolve(H, 1, :SR, tol=(Float == Float32 ? 1e-6 : 1e-12))
+        # vals, _, _ = eigsolve(H, 1, :SR, tol=(Float == Float32 ? 1e-6 : 1e-12))
+        vals = eigvals(Hermitian(Matrix(H)))
         E[iqy, iqx] = E[iqx, iqy] = vals[1]
     end
     return E
+end
+
+"""
+Calculate energies and wavefunctions at zero quasimomenta for `nbands` lowest bands.
+"""
+function q0_states(gf::GaugeField{Float}) where {Float<:AbstractFloat}
+    H = sparse(gf.H_rows, gf.H_cols, gf.H_vals) |> Matrix |> Hermitian
+    B = Int(√size(H, 1)) # size of each block in `H`
+    j_max = (B - 1) ÷ 2  # index for each block in `H` will run in `-j_max:j_max`, giving `B` values in total
+    H[diagind(H)] .= [gf.u₀₀ + 4(jx^2 + jy^2) for jx in -j_max:j_max for jy in -j_max:j_max]
+    f = eigen(H)
+    return f.values, f.vectors
+end
+
+"""
+Construct wavefunction `wf` on a grid having `nx` points in `x` and `y` direction. Use odd `nx` for nice results.
+`v` is one of the vectors output from [`q0_states`](@ref).
+Return (`xs`, `wf`), where `xs` is the grid in one dimension.
+"""
+function make_wavefunction(v::AbstractVector{<:Number}, nx::Integer)
+    B = Int(√length(v))
+    j_max = (B - 1) ÷ 2
+    L = π # spatial period
+    xs = range(0, L, nx)
+    wf = Matrix{eltype(v)}(undef, nx, nx)
+    for (iy, y) in enumerate(xs), (ix, x) in enumerate(xs)
+        wf[ix, iy] = sum(v[(j-1)B+i]cis(2jx*x + 2jy*y) for (j, jx) in enumerate(-j_max:j_max)
+                                                       for (i, jy) in enumerate(-j_max:j_max)) / L
+    end
+    return xs, wf
 end
 
 """
@@ -327,10 +358,19 @@ function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::
         for (r_b, m) in enumerate(-m_max:m_max)
             Q_vals[diagidx[(r_b-1)fgf.blocksize+1:r_b*fgf.blocksize]] .= diagonal .+ m * ω
         end
+        # LinearAlgebra
         vals = eigvals(Hermitian(Matrix(Q)))
         sort!(vals, by=x -> abs(x - E_target))
+
+        # KrylovKit
         # vals, _, _ = eigsolve(Q, nsaves, EigSorter(x -> abs(x - E_target); rev=false), tol=(Float == Float32 ? 1e-6 : 1e-12))
-        E[:, iqx, iqy] .= vals[1:nsaves]
+        
+        # Arpack
+        # Q_vals[2] += 1e-6
+        # vals, _ = eigs(Q, nev=nsaves, sigma=E_target, which=:LM, tol=1e-4)
+
+        E[:, iqx, iqy] .= real.(vals[1:nsaves])
+        # writedlm("$iqx.txt", E[:, iqx, iqy])
         println(iqx)
     end
     return E
