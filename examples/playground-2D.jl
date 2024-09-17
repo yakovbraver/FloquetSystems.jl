@@ -29,6 +29,14 @@ end
 heatmap(x ./ 2π, x ./ 2π, U, c=CMAP, xlabel=L"x / a", ylabel=L"y / a", title="Averaged potential")
 savefig("averaged.png")
 
+### Vector potential
+x = range(-0.1*2π, 2π*1.1, 50) # in units of 1/kᵣ
+χ = π/2
+A = 𝐴(x, x; ϵ, ϵc, χ, normalisation=0.01)
+meshgrid(x, y) = (repeat(x, outer=length(y)), repeat(y, inner=length(x)))
+X, Y = meshgrid(x, x)
+quiver(X ./ 2π, Y ./ 2π, gradient=vec(A), xlabel=L"x / a", ylabel=L"y / a", title=L"\vec{A}(x,y)")
+
 ### Lowest band dispersion
 @time GaugeField(ϵ, ϵc, χ; n_harmonics=10, fft_threshold=0.01);
 @time E = spectrum(gf, n_q=10)

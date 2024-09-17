@@ -5,8 +5,37 @@ using LinearAlgebra: eigvals, Hermitian, diagind, eigen
 
 export GaugeField,
     𝑈,
+    𝐴,
     spectrum,
+    make_wavefunction,
+    q0_states,
     FloquetGaugeField
+
+"Return the 2D gauge potential 𝑈."
+function 𝑈(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, ϵc::Real, χ::Real)
+    U = Matrix{typeof(ϵ)}(undef, length(xs), length(ys))
+    for (iy, y) in enumerate(ys)
+        for (ix, x) in enumerate(xs)
+            β₋ = sin(x-y); β₊ = sin(x+y)
+            U[ix, iy] = (β₊^2 + (ϵc*β₋)^2) / 𝛼(x, y; ϵ, ϵc, χ)^2 * 2ϵ^2 * (1+ϵc^2)
+        end
+    end
+    return U
+end
+
+"Return the 2D vector potential 𝐴(𝑥, 𝑦) as a matrix of tuples of 𝑥- and 𝑦-components. The values are normalised to length given by `normalisation`."
+function 𝐴(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, ϵc::Real, χ::Real, normalisation::Real=1)
+    A = [(sin(2y), sin(2x)) .* ϵc .* sin(χ) ./ 𝛼(x, y; ϵ, ϵc, χ) for y in ys, x in xs]
+    max_A = √maximum(x -> x[1]^2 + x[2]^2, A)
+    map!(x -> x ./ max_A .* normalisation, A, A)
+    return A
+end
+
+"Helper function for calculating the gauge potential 𝑈."
+function 𝛼(x::Real, y::Real; ϵ::Real, ϵc::Real, χ::Real)
+    η₋ = cos(x-y); η₊ = cos(x+y)
+    return ϵ^2 * (1 + ϵc^2) + η₊^2 + (ϵc*η₋)^2 - 2ϵc*η₊*η₋*cos(χ)  
+end
 
 struct GaugeField{Float<:AbstractFloat}
     ϵ::Float
@@ -30,24 +59,6 @@ function GaugeField(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}=(0,
     end
     H, u₀₀ = constructH(ϵ, ϵc, χ, δ, n_harmonics, fft_threshold)
     return GaugeField(ϵ, Float(ϵc), Float(χ), Float.(δ), u₀₀, H...)
-end
-
-"Return the 2D gauge potential 𝑈."
-function 𝑈(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, ϵc::Real, χ::Real)
-    U = Matrix{typeof(ϵ)}(undef, length(xs), length(ys))
-    for (iy, y) in enumerate(ys)
-        for (ix, x) in enumerate(xs)
-            β₋ = sin(x-y); β₊ = sin(x+y)
-            U[ix, iy] = (β₊^2 + (ϵc*β₋)^2) / 𝛼(x, y; ϵ, ϵc, χ)^2 * 2ϵ^2 * (1+ϵc^2)
-        end
-    end
-    return U
-end
-
-"Helper function for calculating the gauge potential 𝑈."
-function 𝛼(x::Real, y::Real; ϵ::Real, ϵc::Real, χ::Real)
-    η₋ = cos(x-y); η₊ = cos(x+y)
-    return ϵ^2 * (1 + ϵc^2) + η₊^2 + (ϵc*η₋)^2 - 2ϵc*η₊*η₋*cos(χ)  
 end
 
 """
