@@ -38,16 +38,19 @@ X, Y = meshgrid(x, x)
 quiver(X ./ 2π, Y ./ 2π, gradient=vec(A), xlabel=L"x / a", ylabel=L"y / a", title=L"\vec{A}(x,y)")
 
 ### Lowest band dispersion
-@time GaugeField(ϵ, ϵc, χ; n_harmonics=10, fft_threshold=0.01);
-@time E = spectrum(gf, n_q=10)
+@time gf = GaugeField(ϵ, ϵc, χ; n_harmonics=10, fft_threshold=0.01);
+n_q = 50
+@time E = spectrum(gf; n_q)
 heatmap(E, c=CMAP)
 E2 = reverse(E, dims=2)
 E3 = reverse(E2, dims=1)
 E4 = reverse(E, dims=1)
-E_full = [E E2; E4 E3] # not entirely correct because central axes are contained twice
+E_full = [E3 E4; E2 E] # not entirely correct because central axes are contained twice
 heatmap(E_full, c=CMAP)
-surface(range(-1, 1, 20), range(-1, 1, 20), E_full, c=CMAP, xlabel=L"q_x / k_R", ylabel=L"q_x / k_R", zlabel="Energy")
+surface(range(-1, 1, 2n_q), range(-1, 1, 2n_q), E_full, c=CMAP, xlabel=L"q_x / k_R", ylabel=L"q_y / k_R", zlabel="Energy")
 savefig("dispersion.png")
+contour(range(-1, 1, 2n_q), range(-1, 1, 2n_q), c=:viridis, E_full, xlabel=L"q_x / k_R", ylabel=L"q_y / k_R", zlabel="Energy", minorticks=6, ticks=-1:1:1, minorgrid=true)
+savefig("dispersion-contour.png")
 
 ### Cut of the lowest band dispersion
 ϵ = 0.1f0
