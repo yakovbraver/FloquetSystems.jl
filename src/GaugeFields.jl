@@ -389,10 +389,11 @@ function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::
 end
 
 """
-Calculate `nsaves` quasienergies closest to `E_target` for quasimomenta `qx` and `qy`, at driving frequency `ω`.
+Threaded calculation of the quasienergy spectrum using dense matrices for quasimomenta `qx` and `qy`, at driving frequency `ω`.
+Quasienergies in the range `E_target` are saved.
+A matrix `E[iqx, iqy]` is returned, with each element holding a variable amount of quasienergies.
 """
-function spectrum_dense(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Tuple{Real,Real}, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real};
-                        showprogress::Bool=true) where {Float<:AbstractFloat}
+function spectrum_dense(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Tuple{Real,Real}, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}) where {Float<:AbstractFloat}
     nthreads = Threads.nthreads()
     if nthreads > 1
         nblas = BLAS.get_num_threads() # save original number of threads to restore later
@@ -406,8 +407,6 @@ function spectrum_dense(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Tuple
     M = Int(√fgf.blocksize) # size of each block in `H`
     j_max = (M - 1) ÷ 2  # index for each block in `H` runs in `-j_max:j_max`, giving `M` values in total
     m_max = fgf.M ÷ 2
-    Q_size = fgf.blocksize * (fgf.M + 1)
-    diagidx = 1:(Q_size+1):Q_size^2
 
     Cmplx = Complex{Float}
     Q_chnl = Channel{Matrix{Cmplx}}(nthreads)
@@ -416,10 +415,9 @@ function spectrum_dense(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Tuple
     for _ in 1:nthreads
         put!(Q_chnl, copy(Q_main))
         put!(diagonal_chnl, Vector{Float}(undef, fgf.blocksize))
-        put!(worskpace_chnl, HermitianEigenWs(Matrix{Cmplx}(undef, Q_size, Q_size), vecs=false))
+        put!(worskpace_chnl, HermitianEigenWs(similar(Q_main), vecs=false))
     end
     
-    progbar = ProgressMeter.Progress(length(qys); enabled=showprogress)
     @floop for (iqy, qy) in enumerate(qys)
         Q = take!(Q_chnl)
         diagonal = take!(diagonal_chnl)
@@ -428,21 +426,21 @@ function spectrum_dense(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Tuple
             for (j, jx) in enumerate(-j_max:j_max), (i, jy) in enumerate(-j_max:j_max)
                 diagonal[(j-1)M+i] = fgf.u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2)
             end
-            for (r_b, m) in enumerate(-m_max:m_max)
-                Q[diagidx[(r_b-1)fgf.blocksize+1:r_b*fgf.blocksize]] .= diagonal .+ m * ω
+            # add 𝑚𝜔 to the diagonal
+            for (r_b, m) in enumerate(-m_max:m_max) # for each diagonal block
+                for r in 1:fgf.blocksize # for each diagonal element of the block
+                    Q[(r_b-1)fgf.blocksize+r, (r_b-1)fgf.blocksize+r] = diagonal[r] + m * ω
+                end
             end
             vals = LAPACK.syevr!(workspace, 'N', 'A', 'L', Q, 0.0, 0.0, 0, 0, 1e-10; resize=false)[1] # `resize=false`: throw an error if workspace is inappropriate instead of resizing automatically
             E[iqx, iqy] = filter(x -> E_target[1] <= x <= E_target[2], vals)
             
-            copy!(Q, Q_main) # restore `Q` because it was changed in the process of eigen
+            copy!(Q, Q_main) # restore `Q` because it was changed in `syevr!`
         end
         put!(Q_chnl, Q)
         put!(worskpace_chnl, workspace)
         put!(diagonal_chnl, diagonal)
-
-        ProgressMeter.next!(progbar)
     end
-    ProgressMeter.finish!(progbar)
 
     nthreads > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
 

@@ -79,8 +79,8 @@ surface!(xu ./ 2π, xu ./ 2π, U ./ (maximum(U)/maximum(abs2, wf)), c=CMAP) # pl
 
 ### Floquet spectrum
 ω = 200
-n_spatial_harmonics = 20
-n_floquet_harmonics = 0
+n_spatial_harmonics = 24
+n_floquet_harmonics = 4
 @time fgf = FloquetGaugeField(ϵ, ϵc, χ; subfactor=3, n_floquet_harmonics, n_spatial_harmonics, fft_threshold=1e-2)
 Q = sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals)
 heatmap(abs.(Q), c=CMAP, yaxis=:flip, title="Q")
@@ -95,9 +95,9 @@ savefig("omega$(ω).png")
 writedlm("omega$(ω)_ns$(n_spatial_harmonics)_nf$(n_floquet_harmonics).txt", E[:, :, 1]')
 
 E_target = (0, 20)
-qxs = range(-1, 1, 200)
-qys = [0]
-@time E = GaugeFields.spectrum_dense(fgf, ω, E_target, qxs, qys); # 2.734439 seconds (1.99 k allocations: 7.393 MiB)
+qys = range(-1, 1, 128)
+qxs = [0]
+@time E = GaugeFields.spectrum_dense(fgf, ω, E_target, qxs, qys);
 fig = plot();   
 for i in eachindex(qys)
     scatter!(fill(qys[i], length(E[1, i])), E[1, i], c=1, markerstrokewidth=0, markersize=1, legend=false,
