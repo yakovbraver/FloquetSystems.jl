@@ -1,7 +1,8 @@
 module GaugeFields
 
-using FFTW, SparseArrays, Arpack, KrylovKit, DelimitedFiles
-using LinearAlgebra: eigvals, Hermitian, diagind, eigen
+using FFTW, SparseArrays, Arpack, KrylovKit, DelimitedFiles, FastLapackInterface, FLoops
+using LinearAlgebra: BLAS, LAPACK, eigvals, Hermitian, diagind, eigen
+import ProgressMeter
 
 export GaugeField,
     𝑈,
@@ -272,7 +273,7 @@ struct FloquetGaugeField{Float<:AbstractFloat}
     Q_vals::Vector{Complex{Float}}
     u₀₀::Float # zeroth harmonic (= average) of 𝑈
     blocksize::Int # size of 𝐻ₘ
-    M::Integer # Floquet harmonic number (will use temporal harmonics from `-M`th to `M`th.)
+    M::Int # Floquet harmonic number (will use temporal harmonics from `-M`th to `M`th)
 end
 
 "Construct a `FloquetGaugeField` object. The cell edges will be reduced `subfactor` times. It is better to take even `n_floquet_harmonics`."
@@ -384,6 +385,67 @@ function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::
         # writedlm("$iqx.txt", E[:, iqx, iqy])
         println(iqx)
     end
+    return E
+end
+
+"""
+Calculate `nsaves` quasienergies closest to `E_target` for quasimomenta `qx` and `qy`, at driving frequency `ω`.
+"""
+function spectrum_dense(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Tuple{Real,Real}, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real};
+                        showprogress::Bool=true) where {Float<:AbstractFloat}
+    nthreads = Threads.nthreads()
+    if nthreads > 1
+        nblas = BLAS.get_num_threads() # save original number of threads to restore later
+        BLAS.set_num_threads(1)
+    end
+
+    E = Matrix{Vector{Float}}(undef, length(qxs), length(qys))
+    
+    Q_main = sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals) |> Matrix
+    
+    M = Int(√fgf.blocksize) # size of each block in `H`
+    j_max = (M - 1) ÷ 2  # index for each block in `H` runs in `-j_max:j_max`, giving `M` values in total
+    m_max = fgf.M ÷ 2
+    Q_size = fgf.blocksize * (fgf.M + 1)
+    diagidx = 1:(Q_size+1):Q_size^2
+
+    Cmplx = Complex{Float}
+    Q_chnl = Channel{Matrix{Cmplx}}(nthreads)
+    diagonal_chnl = Channel{Vector{Float}}(nthreads)
+    worskpace_chnl = Channel{HermitianEigenWs{Cmplx, Matrix{Cmplx}, Float}}(nthreads)
+    for _ in 1:nthreads
+        put!(Q_chnl, copy(Q_main))
+        put!(diagonal_chnl, Vector{Float}(undef, fgf.blocksize))
+        put!(worskpace_chnl, HermitianEigenWs(Matrix{Cmplx}(undef, Q_size, Q_size), vecs=false))
+    end
+    
+    progbar = ProgressMeter.Progress(length(qys); enabled=showprogress)
+    @floop for (iqy, qy) in enumerate(qys)
+        Q = take!(Q_chnl)
+        diagonal = take!(diagonal_chnl)
+        workspace = take!(worskpace_chnl)
+        for (iqx, qx) in enumerate(qxs)
+            for (j, jx) in enumerate(-j_max:j_max), (i, jy) in enumerate(-j_max:j_max)
+                diagonal[(j-1)M+i] = fgf.u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2)
+            end
+            for (r_b, m) in enumerate(-m_max:m_max)
+                Q[diagidx[(r_b-1)fgf.blocksize+1:r_b*fgf.blocksize]] .= diagonal .+ m * ω
+            end
+            vals = LAPACK.syevr!(workspace, 'N', 'A', 'L', Q, 0.0, 0.0, 0, 0, 1e-10; resize=false)[1] # `resize=false`: throw an error if workspace is inappropriate instead of resizing automatically
+            E[iqx, iqy] = filter(x -> E_target[1] <= x <= E_target[2], vals)
+            
+            copy!(Q, Q_main) # restore `Q` because it was changed in the process of eigen
+        end
+        put!(Q_chnl, Q)
+        put!(worskpace_chnl, workspace)
+        put!(diagonal_chnl, diagonal)
+
+        ProgressMeter.next!(progbar)
+    end
+    ProgressMeter.finish!(progbar)
+
+    nthreads > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
+
     return E
 end
 
