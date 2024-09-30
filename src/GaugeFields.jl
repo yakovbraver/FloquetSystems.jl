@@ -2,11 +2,9 @@ module GaugeFields
 
 using FFTW, SparseArrays, Arpack, KrylovKit, DelimitedFiles, FastLapackInterface, FLoops
 using LinearAlgebra: BLAS, LAPACK, eigvals, Hermitian, diagind, eigen
-import ProgressMeter
 
 export GaugeField,
-    𝑈,
-    𝐴,
+    𝑈, 𝐴, ∇𝐴,
     spectrum,
     make_wavefunction,
     q0_states,
@@ -24,12 +22,22 @@ function 𝑈(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, 
     return U
 end
 
-"Return the 2D vector potential 𝐴(𝑥, 𝑦) as a matrix of tuples of 𝑥- and 𝑦-components. The values are normalised to length given by `normalisation`."
-function 𝐴(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, ϵc::Real, χ::Real, normalisation::Real=1)
-    A = [(sin(2y), sin(2x)) .* ϵc .* sin(χ) ./ 𝛼(x, y; ϵ, ϵc, χ) for y in ys, x in xs]
+"Return the 2D vector potential 𝐴(𝑥, 𝑦) as a matrix of tuples of 𝑥- and 𝑦-components."
+function 𝐴(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, ϵc::Real, χ::Real)
+    [(sin(2y), sin(2x)) .* ϵc .* sin(χ) ./ 𝛼(x, y; ϵ, ϵc, χ) for y in ys, x in xs]
+end
+
+"Return the ∇𝐴(𝑥, 𝑦) matrix."
+function ∇𝐴(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, ϵc::Real, χ::Real)
+    [((-2ϵc*cos(χ)sin(2x) + ϵc^2 * sin(2(x-y)) + sin(2(x+y))) * ϵc * sin(2y) * sin(χ) +
+      (-2ϵc*cos(χ)sin(2x) - ϵc^2 * sin(2(x-y)) + sin(2(x+y))) * ϵc * sin(2x) * sin(χ)) /
+      𝛼(x, y; ϵ, ϵc, χ)^2 for y in ys, x in xs]
+end
+
+"Normalise the 2D vector potential 𝐴(𝑥, 𝑦) to length specified by normalisation."
+function normaliseA!(A::AbstractVector{Tuple{<:Real,<:Real}}; normalisation::Real=1)
     max_A = √maximum(x -> x[1]^2 + x[2]^2, A)
     map!(x -> x ./ max_A .* normalisation, A, A)
-    return A
 end
 
 "Helper function for calculating the gauge potential 𝑈."

@@ -1,11 +1,11 @@
 includet("../src/GaugeFields.jl")
 using .GaugeFields
 
-using LinearAlgebra, Plots, LaTeXStrings, SparseArrays
+using Plots, LaTeXStrings, JLD2, LinearAlgebra, SparseArrays
 CMAP = cgrad(:linear_grey_0_100_c0_n256, rev=false);
 cmap_rainbow = cgrad(:rainbow_bgyrm_35_85_c69_n256);
 plotlyjs()
-theme(:dark, size=(600, 500)) 
+theme(:dark, size=(720, 600)) 
 
 ### Scalar potential
 x = range(-0.1*2π, 2π*1.1, 500) # in units of 1/kᵣ
@@ -32,14 +32,26 @@ savefig("averaged.png")
 
 ### Vector potential
 meshgrid(x, y) = (repeat(x, outer=length(y)), repeat(y, inner=length(x)))
-x = range(-0.1*2π, 2π*1.1, 200) # in units of 1/kᵣ
+x = range(-0.1*2π, 2π*1.1, 500) # in units of 1/kᵣ
 χ = π/2
-A = 𝐴(x, x; ϵ, ϵc, χ, normalisation=1)
+A = 𝐴(x, x; ϵ, ϵc, χ)
+A_abs2 = map(x -> x[1]^2 + x[2]^2, A)
+heatmap(x ./ 2π, x ./ 2π, A_abs2, c=cmap_rainbow, xlabel=L"x / a", ylabel=L"y / a", title=L"\vec{A}^2(x,y)")
+savefig("A-abs.pdf")
+
+Aₓ = [A[I][1] for I in CartesianIndices(A)]
+heatmap(x ./ 2π, x ./ 2π, Aₓ, c=:coolwarm, xlabel=L"x / a", ylabel=L"y / a", title=L"A_x(x,y)")
+savefig("Ax.pdf")
+Ay = [A[I][2] for I in CartesianIndices(A)]
+heatmap(x ./ 2π, x ./ 2π, Ay, c=:coolwarm, xlabel=L"x / a", ylabel=L"y / a", title=L"A_y(x,y)")
+savefig("Ay.pdf")
+
 X, Y = meshgrid(x, x)
 quiver(X ./ 2π, Y ./ 2π, gradient=vec(A), xlabel=L"x / a", ylabel=L"y / a", title=L"\vec{A}(x,y)")
-A_abs = map(x -> √(x[1]^2 + x[2]^2), A)
-heatmap(x ./ 2π, x ./ 2π, A_abs, c=cmap_rainbow, xlabel=L"x / a", ylabel=L"y / a", title=L"|\vec{A}(x,y)|", cbar_title="arb. units")
-savefig("A-abs.pdf")
+
+∇A = ∇𝐴(x, x; ϵ, ϵc, χ)
+heatmap(x ./ 2π, x ./ 2π, ∇A, c=:coolwarm, xlabel=L"x / a", ylabel=L"y / a", title=L"\nabla \vec{A}(x,y)")
+savefig("divA.pdf")
 
 ### Lowest band dispersion
 @time gf = GaugeField(ϵ, ϵc, χ; n_harmonics=10, fft_threshold=0.01);
@@ -78,10 +90,11 @@ U = 𝑈(xu, xu; ϵ=Float32(ϵ), ϵc, χ)
 surface!(xu ./ 2π, xu ./ 2π, U ./ (maximum(U)/maximum(abs2, wf)), c=CMAP) # plot x in units of a = 2π/kᵣ
 
 ### Floquet spectrum
-ω = 200
-n_spatial_harmonics = 24
+ω = 1000
+n_spatial_harmonics = 40
 n_floquet_harmonics = 4
 @time fgf = FloquetGaugeField(ϵ, ϵc, χ; subfactor=3, n_floquet_harmonics, n_spatial_harmonics, fft_threshold=1e-2)
+
 Q = sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals)
 heatmap(abs.(Q), c=CMAP, yaxis=:flip, title="Q")
 
@@ -92,15 +105,15 @@ qys = [0]
 scatter(qxs, E[:, :, 1]', c=1, markerstrokewidth=0, markersize=1, legend=false, ylims=(0, 20),
         title=L"\omega=%$(ω)", xlabel=L"q_x/k_R", ylabel="quasienergy")
 savefig("omega$(ω).png")
-writedlm("omega$(ω)_ns$(n_spatial_harmonics)_nf$(n_floquet_harmonics).txt", E[:, :, 1]')
+jldsave("omega$(ω)_ns$(n_spatial_harmonics)_nf$(n_floquet_harmonics).jld2"; E)
 
-E_target = (0, 20)
-qys = range(-1, 1, 128)
+E_target = (6, 18)
+qys = range(-1, 1, 256)
 qxs = [0]
 @time E = GaugeFields.spectrum_dense(fgf, ω, E_target, qxs, qys);
 fig = plot();   
 for i in eachindex(qys)
-    scatter!(fill(qys[i], length(E[1, i])), E[1, i], c=1, markerstrokewidth=0, markersize=1, legend=false,
+    scatter!(fill(qys[i], length(E[1, i])), E[1, i], c=1, markerstrokewidth=0, markersize=1, legend=false, xlims=(-1, 1), ylims=E_target,
             title=L"\omega=%$(ω)", xlabel=L"q_y/k_R", ylabel="quasienergy")
 end
 # for i in eachindex(qxs)
@@ -110,4 +123,4 @@ end
 fig
 
 savefig("omega$(ω).png")
-writedlm("omega$(ω)_ns$(n_spatial_harmonics)_nf$(n_floquet_harmonics).txt", E[:, :, 1]')
+E = load("omega$(ω)_ns$(n_spatial_harmonics)_nf$(n_floquet_harmonics).jld2")["E"]
