@@ -13,7 +13,7 @@ x = range(-0.1*2π, 2π*1.1, 500) # in units of 1/kᵣ
 ϵc = 1
 χ = pi/2
 U = 𝑈(x, x; ϵ, ϵc, χ)
-heatmap(x ./ 2π, x ./ 2π, U, c=cmap_rainbow, xlabel=L"x / a", ylabel=L"y / a", title=L"U_D(x,y)") # plot x in units of 𝑎 = 2π/kᵣ
+heatmap(x ./ 2π, x ./ 2π, U', c=cmap_rainbow, xlabel=L"x / a", ylabel=L"y / a", title=L"U_D(x,y)") # plot x in units of 𝑎 = 2π/kᵣ
 savefig("U_D.pdf")
 plot(x, U[125, :] / 2pi, xlabel=L"x/a", legend=false)
 savefig("cut.pdf")
@@ -27,7 +27,7 @@ for j in 0:n-1, i in 0:n-1
     m = j*n+i # number of performed iterations
     U .= (U.*m .+ 𝑈(x.+i*Δδ, x.+j*Δδ; ϵ, ϵc, χ)) ./ (m+1) # on-line average
 end
-heatmap(x ./ 2π, x ./ 2π, U, c=CMAP, xlabel=L"x / a", ylabel=L"y / a", title="Averaged potential")
+heatmap(x ./ 2π, x ./ 2π, U', c=CMAP, xlabel=L"x / a", ylabel=L"y / a", title="Averaged potential")
 savefig("averaged.png")
 
 ### Vector potential
@@ -36,21 +36,30 @@ x = range(-0.1*2π, 2π*1.1, 500) # in units of 1/kᵣ
 χ = π/2
 A = 𝐴(x, x; ϵ, ϵc, χ)
 A_abs2 = map(x -> x[1]^2 + x[2]^2, A)
-heatmap(x ./ 2π, x ./ 2π, A_abs2, c=cmap_rainbow, xlabel=L"x / a", ylabel=L"y / a", title=L"\vec{A}^2(x,y)")
+heatmap(x ./ 2π, x ./ 2π, A_abs2', c=cmap_rainbow, xlabel=L"x / a", ylabel=L"y / a", title=L"\vec{A}^2(x,y)")
 savefig("A-abs.pdf")
 
+# components
 Aₓ = [A[I][1] for I in CartesianIndices(A)]
-heatmap(x ./ 2π, x ./ 2π, Aₓ, c=:coolwarm, xlabel=L"x / a", ylabel=L"y / a", title=L"A_x(x,y)")
+heatmap(x ./ 2π, x ./ 2π, Aₓ', c=:coolwarm, xlabel=L"x / a", ylabel=L"y / a", title=L"A_x(x,y)")
 savefig("Ax.pdf")
 Ay = [A[I][2] for I in CartesianIndices(A)]
-heatmap(x ./ 2π, x ./ 2π, Ay, c=:coolwarm, xlabel=L"x / a", ylabel=L"y / a", title=L"A_y(x,y)")
+heatmap(x ./ 2π, x ./ 2π, Ay', c=:coolwarm, xlabel=L"x / a", ylabel=L"y / a", title=L"A_y(x,y)")
 savefig("Ay.pdf")
 
+# quiver
+plotlyjs()
+theme(:dark, size=(1000, 1000))
 X, Y = meshgrid(x, x)
+normalisation = 0.02
+max_A = √maximum(x -> x[1]^2 + x[2]^2, A)
+map!(x -> x ./ max_A .* normalisation, A, A)
+quiver(X ./ 2π, Y ./ 2π, gradient=vec(A), xlabel="x / a", ylabel="y / a", title="A(x,y)", lw=2, widen=false)
 quiver(X ./ 2π, Y ./ 2π, gradient=vec(A), xlabel=L"x / a", ylabel=L"y / a", title=L"\vec{A}(x,y)")
 
+# divergence
 ∇A = ∇𝐴(x, x; ϵ, ϵc, χ)
-heatmap(x ./ 2π, x ./ 2π, ∇A, c=:coolwarm, xlabel=L"x / a", ylabel=L"y / a", title=L"\nabla \vec{A}(x,y)")
+heatmap(x ./ 2π, x ./ 2π, ∇A', c=:coolwarm, xlabel=L"x / a", ylabel=L"y / a", title=L"\nabla \vec{A}(x,y)")
 savefig("divA.pdf")
 
 ### Lowest band dispersion

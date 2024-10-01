@@ -24,14 +24,14 @@ end
 
 "Return the 2D vector potential 𝐴(𝑥, 𝑦) as a matrix of tuples of 𝑥- and 𝑦-components."
 function 𝐴(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, ϵc::Real, χ::Real)
-    [(sin(2y), sin(2x)) .* ϵc .* sin(χ) ./ 𝛼(x, y; ϵ, ϵc, χ) for y in ys, x in xs]
+    [(sin(2y), sin(2x)) .* ϵc .* sin(χ) ./ 𝛼(x, y; ϵ, ϵc, χ) for x in xs, y in ys]
 end
 
 "Return the ∇𝐴(𝑥, 𝑦) matrix."
 function ∇𝐴(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, ϵc::Real, χ::Real)
     [((-2ϵc*cos(χ)sin(2x) + ϵc^2 * sin(2(x-y)) + sin(2(x+y))) * ϵc * sin(2y) * sin(χ) +
       (-2ϵc*cos(χ)sin(2x) - ϵc^2 * sin(2(x-y)) + sin(2(x+y))) * ϵc * sin(2x) * sin(χ)) /
-      𝛼(x, y; ϵ, ϵc, χ)^2 for y in ys, x in xs]
+      𝛼(x, y; ϵ, ϵc, χ)^2 for x in xs, y in ys]
 end
 
 "Normalise the 2D vector potential 𝐴(𝑥, 𝑦) to length specified by normalisation."
