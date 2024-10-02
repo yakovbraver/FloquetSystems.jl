@@ -11,8 +11,9 @@ theme(:dark, size=(720, 600))
 x = range(-0.1*2π, 2π*1.1, 500) # in units of 1/kᵣ
 ϵ = 0.1f0
 ϵc = 1
-χ = pi/2
+χ = 0
 U = 𝑈(x, x; ϵ, ϵc, χ)
+@time 𝑈(x, x; ϵ, ϵc, χ);
 heatmap(x ./ 2π, x ./ 2π, U', c=cmap_rainbow, xlabel=L"x / a", ylabel=L"y / a", title=L"U_D(x,y)") # plot x in units of 𝑎 = 2π/kᵣ
 savefig("U_D.pdf")
 plot(x, U[125, :] / 2pi, xlabel=L"x/a", legend=false)
@@ -61,6 +62,11 @@ quiver(X ./ 2π, Y ./ 2π, gradient=vec(A), xlabel=L"x / a", ylabel=L"y / a", ti
 ∇A = ∇𝐴(x, x; ϵ, ϵc, χ)
 heatmap(x ./ 2π, x ./ 2π, ∇A', c=:coolwarm, xlabel=L"x / a", ylabel=L"y / a", title=L"\nabla \vec{A}(x,y)")
 savefig("divA.pdf")
+
+### Magnetic field
+B = 𝐵(x, x; ϵ, ϵc, χ)
+heatmap(x ./ 2π, x ./ 2π, B', c=:coolwarm, xlabel=L"x / a", ylabel=L"y / a", title=L"B_z(x,y)") # plot x in units of 𝑎 = 2π/kᵣ
+savefig("B.pdf")
 
 ### Lowest band dispersion
 @time gf = GaugeField(ϵ, ϵc, χ; n_harmonics=10, fft_threshold=0.01);

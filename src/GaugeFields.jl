@@ -4,7 +4,7 @@ using FFTW, SparseArrays, Arpack, KrylovKit, DelimitedFiles, FastLapackInterface
 using LinearAlgebra: BLAS, LAPACK, eigvals, Hermitian, diagind, eigen
 
 export GaugeField,
-    𝑈, 𝐴, ∇𝐴,
+    𝑈, 𝐴, ∇𝐴, 𝐵,
     spectrum,
     make_wavefunction,
     q0_states,
@@ -12,14 +12,7 @@ export GaugeField,
 
 "Return the 2D gauge potential 𝑈."
 function 𝑈(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, ϵc::Real, χ::Real)
-    U = Matrix{typeof(ϵ)}(undef, length(xs), length(ys))
-    for (iy, y) in enumerate(ys)
-        for (ix, x) in enumerate(xs)
-            β₋ = sin(x-y); β₊ = sin(x+y)
-            U[ix, iy] = (β₊^2 + (ϵc*β₋)^2) / 𝛼(x, y; ϵ, ϵc, χ)^2 * 2ϵ^2 * (1+ϵc^2)
-        end
-    end
-    return U
+    [(sin(x+y)^2 + (ϵc*sin(x-y))^2) / 𝛼(x, y; ϵ, ϵc, χ)^2 * 2ϵ^2 * (1+ϵc^2) for x in xs, y in ys]
 end
 
 "Return the 2D vector potential 𝐴(𝑥, 𝑦) as a matrix of tuples of 𝑥- and 𝑦-components."
@@ -38,6 +31,11 @@ end
 function normaliseA!(A::AbstractVector{Tuple{<:Real,<:Real}}; normalisation::Real=1)
     max_A = √maximum(x -> x[1]^2 + x[2]^2, A)
     map!(x -> x ./ max_A .* normalisation, A, A)
+end
+
+"Return the magnetic field 𝐵(𝑥, 𝑦), which is the 𝑧-component."
+function 𝐵(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, ϵc::Real, χ::Real)
+    [2(cos(2x) - cos(2y)) * ϵc * ϵ^2 * (1+ϵc^2) * sin(χ) / 𝛼(x, y; ϵ, ϵc, χ) for x in xs, y in ys]
 end
 
 "Helper function for calculating the gauge potential 𝑈."
