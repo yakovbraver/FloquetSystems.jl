@@ -12,7 +12,7 @@ export GaugeField,
 
 "Return the 2D gauge potential 𝑈."
 function 𝑈(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, ϵc::Real, χ::Real)
-    [(sin(x+y)^2 + (ϵc*sin(x-y))^2) / 𝛼(x, y; ϵ, ϵc, χ)^2 * 2ϵ^2 * (1+ϵc^2) for x in xs, y in ys]
+    typeof(ϵ)[(sin(x+y)^2 + (ϵc*sin(x-y))^2) / 𝛼(x, y; ϵ, ϵc, χ)^2 * 2ϵ^2 * (1+ϵc^2) for x in xs, y in ys]
 end
 
 "Return the 2D vector potential 𝐴(𝑥, 𝑦) as a matrix of tuples of 𝑥- and 𝑦-components."
