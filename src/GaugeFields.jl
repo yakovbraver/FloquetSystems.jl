@@ -1,6 +1,6 @@
 module GaugeFields
 
-using FFTW, SparseArrays, Arpack, KrylovKit, DelimitedFiles, FastLapackInterface, FLoops
+using FFTW, SparseArrays, Arpack, KrylovKit, FastLapackInterface, FLoops
 using Distributed, SharedArrays
 using LinearAlgebra: BLAS, LAPACK, eigvals, Hermitian, diagind, eigen
 

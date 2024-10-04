@@ -1,6 +1,6 @@
 @testset "Test `filter_count!` and `fft_to_matrix!`" begin
     u = [collect(0:7)'; collect(10:17)'; collect(20:27)']
-    n_elems = GaugeFields.filter_count!(u, factor=1e-3)
+    n_elems = GaugeFields.filter_count!(u, fft_threshold=1e-3)
     @test n_elems == 210
     
     H_rows = Vector{Int}(undef, n_elems)
@@ -59,21 +59,21 @@ end
     ω = 10
     # diagonal blocks
     counter = 1
-    GaugeFields.fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, 0, blocksize, nblockrows, counter, ω)
+    GaugeFields.fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, 0, blocksize, nblockrows, counter)
     counter += nblockrows * nelems
     # off-diagonal blocks
     for m in 1:nblockrows-1
-        GaugeFields.fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, m, blocksize, nblockrows, counter, 0)
+        GaugeFields.fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, m, blocksize, nblockrows, counter)
         counter += 2(nblockrows-m) * nelems
     end
     Q = sparse(Q_rows, Q_cols, Q_vals)
     Q_true = [
-        1-ω  2    1  3  1    3
-        3    4-ω  2  4  2    4
-        1    2    1  2  1    3
-        3    4    3  4  2    4
-        1    2    1  2  1+ω  2
-        3    4    3  4  3    4+ω
+        1  2  1  3  1  3
+        3  4  2  4  2  4
+        1  2  1  2  1  3
+        3  4  3  4  2  4
+        1  2  1  2  1  2
+        3  4  3  4  3  4
     ]
     @test Q == Q_true
 end
