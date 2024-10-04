@@ -1,6 +1,7 @@
 module GaugeFields
 
 using FFTW, SparseArrays, Arpack, KrylovKit, DelimitedFiles, FastLapackInterface, FLoops
+using Distributed, SharedArrays
 using LinearAlgebra: BLAS, LAPACK, eigvals, Hermitian, diagind, eigen
 
 export GaugeField,
@@ -59,7 +60,7 @@ end
 Construct a `GaugeField` object.
 `n_harmonics` is the number of positive harmonics; coordinates will be discretised using `2n_harmonics` points.
 """
-function GaugeField(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}=(0, 0); n_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
+function GaugeField(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}=(0, 0); n_harmonics::Integer=32, fft_threshold::Real=1e-5) where {Float<:AbstractFloat}
     if isodd(n_harmonics)
         @warn "`n_harmonics` must be even. Reducing `n_harmonics` by one."
         n_harmonics -= 1
@@ -79,7 +80,7 @@ function constructH(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}, M:
     x = range(0, L-dx, 2M)
     U = 𝑈(x, x; ϵ, ϵc, χ) .* (dx/L)^2
     u = rfft(U) |> real # guaranteed to be real (and even) because `U` is real and even
-    n_elem = filter_count!(u, factor=fft_threshold) # filter small values and calculate the number of elements in the final Hamiltonian
+    n_elem = filter_count!(u; fft_threshold) # filter small values and calculate the number of elements in the final Hamiltonian
     
     H_rows = Vector{Int}(undef, n_elem)
     H_cols = Vector{Int}(undef, n_elem)
@@ -101,15 +102,14 @@ end
 Set to zero values of `u` that are `threshold` times smaller (by absolute magnitude) than the largest.
 Based on the resulting number of nonzero elements in `u`, count the number of values that will be stored in 𝐻.
 """
-function filter_count!(u::AbstractMatrix{<:Number}; factor::Real)
+function filter_count!(u::AbstractMatrix{<:Number}; fft_threshold::Real)
     n_elem = 0
     M = size(u, 2) ÷ 2
     N = size(u, 1) # if `u` is really the result of `rfft`, then `N == M+1`, but we keep the calculation a bit more general
-    max_u = maximum(abs, u)
     # do the first row of `u`, i.e. the diagonal blocks of 𝐻, separately
     for c in axes(u, 2)
         r = 1
-        if abs(u[r, c]) < factor * max_u
+        if abs(u[r, c]) < fft_threshold
             u[r, c] = 0
         else
             if c < M+1
@@ -122,7 +122,7 @@ function filter_count!(u::AbstractMatrix{<:Number}; factor::Real)
         end
     end
     for c in axes(u, 2), r in 2:size(u, 1)
-        if abs(u[r, c]) < factor * max_u
+        if abs(u[r, c]) < fft_threshold
             u[r, c] = 0
         else
             if c < M+1
@@ -251,14 +251,16 @@ function make_wavefunction(v::AbstractVector{<:Number}, nx::Integer)
 end
 
 """
-Calculate energy dispersion for `nstates` lowest states for all pairs of quasimomenta described by `qxs` and `qys`.
+Calculate energy dispersion for all pairs of quasimomenta described by `qxs` and `qys`.
+Save `nsaves` lowest states; if not passed, all states are saved.
 """
-function spectrum(gf::GaugeField{Float}, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}; nsaves::Integer) where {Float<:AbstractFloat}
-    E = Array{Float}(undef, nsaves, length(qxs), length(qys))
-
+function spectrum(gf::GaugeField{Float}, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}; nsaves::Integer=0) where {Float<:AbstractFloat}
     H = sparse(gf.H_rows, gf.H_cols, gf.H_vals)
     H_vals = nonzeros(H)
     diagidx = findall(==(0), H_vals) # find indices of diagonal elements -- we saved zeros there (see `constructH`)
+    
+    (nsaves == 0) && (nsaves = size(H, 1))
+    E = Array{Float}(undef, nsaves, length(qxs), length(qys))
 
     M = Int(√size(H, 1)) # size of each block in `H`
     j_max = (M - 1) ÷ 2  # index for each block in `H` will run in `-j_max:j_max`, giving `M` values in total
@@ -300,8 +302,8 @@ function FloquetGaugeField(ϵ::Float, ϵc::Real, χ::Real; subfactor::Integer, n
 end
 
 """
-Construct the quasienergy operator using temporal harmonics from `-M`th to `M`th."
-The resulting Hamiltonian will have M+1 blocks.
+Construct the quasienergy operator using temporal harmonics from `-M`th to `M`th.
+The resulting Hamiltonian will have M+1 blocks in each dimension.
 """
 function constructQ(gaugefields::Vector{GaugeField{Float}}, M::Integer) where Float<:AbstractFloat
     blocksize = maximum(gaugefields[1].H_rows) # size of 𝐻
@@ -356,47 +358,52 @@ function fill_blockband!(Q_rows, Q_cols, Q_vals, q_rows, q_cols, q_vals, m, bloc
 end
 
 """
-Calculate `nsaves` quasienergies closest to `E_target` for quasimomenta `qx` and `qy`, at driving frequency `ω`.
+Calculate `nsaves` quasienergies closest to `E_target` for quasimomenta `qxs` and `qys`, at driving frequency `ω`.
+The loop over `qys` is parallelised using multiprocessing.
 """
-function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}; nsaves::Integer)  where {Float<:AbstractFloat}
-    E = Array{Float,3}(undef, nsaves, length(qxs), length(qys))
-    
-    Q = sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals)
-    Q_vals = nonzeros(Q)
-    diagidx = findall(==(Inf), Q_vals) # find indices of diagonal elements -- we saved Inf's there (see `constructH`)
-    diagonal = Vector{Float}(undef, fgf.blocksize) # 𝑞-dependent diagonal of each diagonal block
+function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}; nsaves::Integer, threshold::Real=1e-5)  where {Float<:AbstractFloat}
+    E = SharedArray{Float,3}(nsaves, length(qxs), length(qys))
     
     M = Int(√fgf.blocksize) # size of each block in `H`
     j_max = (M - 1) ÷ 2  # index for each block in `H` runs in `-j_max:j_max`, giving `M` values in total
     m_max = fgf.M ÷ 2
-    for (iqy, qy) in enumerate(qys), (iqx, qx) in enumerate(qxs)
-        for (j, jx) in enumerate(-j_max:j_max), (i, jy) in enumerate(-j_max:j_max)
-            diagonal[(j-1)M+i] = fgf.u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2)
-        end
-        for (r_b, m) in enumerate(-m_max:m_max)
-            Q_vals[diagidx[(r_b-1)fgf.blocksize+1:r_b*fgf.blocksize]] .= diagonal .+ m * ω
-        end
-        # LinearAlgebra
-        vals = eigvals(Hermitian(Matrix(Q)))
-        sort!(vals, by=x -> abs(x - E_target))
-
-        # KrylovKit
-        # vals, _, _ = eigsolve(Q, nsaves, EigSorter(x -> abs(x - E_target); rev=false), tol=(Float == Float32 ? 1e-6 : 1e-12))
-        
-        # Arpack
-        # Q_vals[2] += 1e-6
-        # vals, _ = eigs(Q, nev=nsaves, sigma=E_target, which=:LM, tol=1e-4)
-
-        E[:, iqx, iqy] .= real.(vals[1:nsaves])
-        # writedlm("$iqx.txt", E[:, iqx, iqy])
-        println(iqx)
+    
+    nw = nworkers()
+    if nw > 1
+        nblas = BLAS.get_num_threads() # save original number of threads to restore later
+        BLAS.set_num_threads(1)
     end
+
+    pmap(1:nw) do pid
+        Q = sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals)
+        droptol!(Q, threshold) # much easier to just call `droptol!` here than to rework `constructQ` (to drop values during construction)
+        Q_vals = nonzeros(Q)
+        diagidx = findall(==(Inf), Q_vals) # find indices of diagonal elements -- we saved Inf's there (see `constructH`)
+        diagonal = Vector{Float}(undef, fgf.blocksize) # 𝑞-dependent diagonal of each diagonal block
+        for iqy in pid:nw:length(qys)
+            qy = qys[iqy]
+            for (iqx, qx) in enumerate(qxs)
+                for (j, jx) in enumerate(-j_max:j_max), (i, jy) in enumerate(-j_max:j_max)
+                    diagonal[(j-1)M+i] = fgf.u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2)
+                end
+                for (r_b, m) in enumerate(-m_max:m_max)
+                    Q_vals[diagidx[(r_b-1)fgf.blocksize+1:r_b*fgf.blocksize]] .= diagonal .+ m * ω
+                end
+                # Q_vals[2] += 1e-6
+                vals, _ = eigs(Q, nev=nsaves, sigma=E_target, which=:LM, tol=1e-6)
+                E[:, iqx, iqy] .= real.(vals[1:nsaves])
+            end
+        end
+    end
+
+    nw > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
+    
     return E
 end
 
 """
 Threaded calculation of the quasienergy spectrum using dense matrices for quasimomenta `qx` and `qy`, at driving frequency `ω`.
-Quasienergies in the range `E_target` are saved.
+All quasienergies in the range `E_target` are saved. Note that one cannot know beforehand how many there will be.
 A matrix `E[iqx, iqy]` is returned, with each element holding a variable amount of quasienergies.
 """
 function spectrum_dense(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Tuple{Real,Real}, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}) where {Float<:AbstractFloat}

@@ -5,7 +5,7 @@ using Plots, LaTeXStrings, JLD2, LinearAlgebra, SparseArrays
 CMAP = cgrad(:linear_grey_0_100_c0_n256, rev=false);
 cmap_rainbow = cgrad(:rainbow_bgyrm_35_85_c69_n256);
 plotlyjs()
-theme(:dark, size=(720, 600)) 
+theme(:dark, size=(600, 500)) 
 
 ### Scalar potential
 x = range(-0.1*2π, 2π*1.1, 500) # in units of 1/kᵣ
@@ -69,7 +69,7 @@ heatmap(x ./ 2π, x ./ 2π, B', c=:coolwarm, xlabel=L"x / a", ylabel=L"y / a", t
 savefig("B.pdf")
 
 ### Lowest band dispersion
-@time gf = GaugeField(ϵ, ϵc, χ; n_harmonics=10, fft_threshold=0.01);
+gf = GaugeField(ϵ, ϵc, χ; n_harmonics=20);
 n_q = 50
 @time E = spectrum(gf; n_q)
 heatmap(E, c=CMAP)
@@ -87,7 +87,9 @@ savefig("dispersion-contour.png")
 ϵ = 0.1f0
 ϵc = 1
 χ = 0
-gf = GaugeField(ϵ, ϵc, χ; n_harmonics=50, fft_threshold=1e-2)
+gf = GaugeField(ϵ, ϵc, χ; n_harmonics=24)
+# H = sparse(gf.H_rows, gf.H_cols, gf.H_vals)
+# heatmap(abs.(H), c=:viridis, yaxis=:flip, title="Q")
 qxs = range(-1, 1, 25)
 qys = [0]
 nsaves = 8
@@ -95,7 +97,7 @@ nsaves = 8
 scatter(qxs, e[:, :, 1]', c=1, markerstrokewidth=0, markersize=2, legend=false)
 
 ### q = 0 wavefunctions
-gf = GaugeField(ϵ, ϵc, χ; n_harmonics=20, fft_threshold=1e-2)
+gf = GaugeField(ϵ, ϵc, χ; n_harmonics=20)
 E, V = GaugeFields.q0_states(gf)
 whichstate = 200
 xs, wf = GaugeFields.make_wavefunction(V[:, whichstate], 201)
@@ -104,29 +106,45 @@ xu = range(0, π, 500) # coordinates for potential
 U = 𝑈(xu, xu; ϵ=Float32(ϵ), ϵc, χ)
 surface!(xu ./ 2π, xu ./ 2π, U ./ (maximum(U)/maximum(abs2, wf)), c=CMAP) # plot x in units of a = 2π/kᵣ
 
+### all eigenvalues for a specific qx, qy pair
+gf = GaugeField(ϵ, ϵc, χ; n_harmonics=10);
+qx = [0]; qy =[0.5]
+e = spectrum(gf, qx, qy)
+plotlyjs()
+scatter(e[:, 1, 1], markersize=1, markerstrokewidth=0)
+
 ### Floquet spectrum
-ω = 1000
-n_spatial_harmonics = 40
-n_floquet_harmonics = 4
-@time fgf = FloquetGaugeField(ϵ, ϵc, χ; subfactor=3, n_floquet_harmonics, n_spatial_harmonics, fft_threshold=1e-2)
+ω = 400
+n_spatial_harmonics = 24
+n_floquet_harmonics = 2
+ϵ = 0.1
+ϵc = 1
+χ = 0
+@time fgf = FloquetGaugeField(ϵ, ϵc, χ; subfactor=3, n_floquet_harmonics, n_spatial_harmonics, fft_threshold=1e-5);
 
-Q = sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals)
-heatmap(abs.(Q), c=CMAP, yaxis=:flip, title="Q")
+# sparse variant
 
-E_target = 10
-qxs = range(-1, 1, 200)
-qys = [0]
-@time E = spectrum(fgf, ω, E_target, qxs, qys; nsaves=200);
-scatter(qxs, E[:, :, 1]', c=1, markerstrokewidth=0, markersize=1, legend=false, ylims=(0, 20),
+@time Q = sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals);
+plotlyjs()
+heatmap(abs.(Q), c=:viridis, yaxis=:flip, title="Q")
+
+E_target = 12
+qys = range(-1, 1, 256)
+qxs = [0]
+@time E = spectrum(fgf, ω, E_target, qxs, qys; nsaves=50);
+heatmap(abs.(Matrix(Q)), yaxis=:flip)
+scatter(qys, E[:, 1, :]', c=1, markerstrokewidth=0, markersize=1, legend=false, ylims=(6, 18),
         title=L"\omega=%$(ω)", xlabel=L"q_x/k_R", ylabel="quasienergy")
 savefig("omega$(ω).png")
 jldsave("omega$(ω)_ns$(n_spatial_harmonics)_nf$(n_floquet_harmonics).jld2"; E)
+
+# dense variant
 
 E_target = (6, 18)
 qys = range(-1, 1, 256)
 qxs = [0]
 @time E = GaugeFields.spectrum_dense(fgf, ω, E_target, qxs, qys);
-fig = plot();   
+fig = plot();
 for i in eachindex(qys)
     scatter!(fill(qys[i], length(E[1, i])), E[1, i], c=1, markerstrokewidth=0, markersize=1, legend=false, xlims=(-1, 1), ylims=E_target,
             title=L"\omega=%$(ω)", xlabel=L"q_y/k_R", ylabel="quasienergy")
@@ -137,5 +155,6 @@ end
 # end
 fig
 
-savefig("omega$(ω).png")
-E = load("omega$(ω)_ns$(n_spatial_harmonics)_nf$(n_floquet_harmonics).jld2")["E"]
+subfactor = 3
+savefig("omega$(ω)_sf$(subfactor).png")
+E = load("omega$(ω)_sf$(subfactor)_ns$(n_spatial_harmonics)_nf$(n_floquet_harmonics).jld2")["E"]
