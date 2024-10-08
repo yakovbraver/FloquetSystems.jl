@@ -1,4 +1,5 @@
 includet("../src/GaugeFields.jl")
+# @everywhere include("src/GaugeFields.jl")
 using .GaugeFields
 
 using Plots, LaTeXStrings, JLD2, LinearAlgebra, SparseArrays
@@ -114,9 +115,10 @@ plotlyjs()
 scatter(e[:, 1, 1], markersize=1, markerstrokewidth=0)
 
 ### Floquet spectrum
+
 ω = 400
 n_spatial_harmonics = 24
-n_floquet_harmonics = 2
+n_floquet_harmonics = 4
 ϵ = 0.1
 ϵc = 1
 χ = 0
@@ -124,19 +126,16 @@ n_floquet_harmonics = 2
 
 # sparse variant
 
-@time Q = sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals);
-plotlyjs()
-heatmap(abs.(Q), c=:viridis, yaxis=:flip, title="Q")
-
 E_target = 12
 qys = range(-1, 1, 256)
 qxs = [0]
 @time E = spectrum(fgf, ω, E_target, qxs, qys; nsaves=50);
-heatmap(abs.(Matrix(Q)), yaxis=:flip)
-scatter(qys, E[:, 1, :]', c=1, markerstrokewidth=0, markersize=1, legend=false, ylims=(6, 18),
+scatter(qys, E[:, 1, :]', c=1, markerstrokewidth=0, markersize=1, legend=false,
         title=L"\omega=%$(ω)", xlabel=L"q_x/k_R", ylabel="quasienergy")
 savefig("omega$(ω).png")
 jldsave("omega$(ω)_ns$(n_spatial_harmonics)_nf$(n_floquet_harmonics).jld2"; E)
+subfactor = 3
+E = load("omega$(ω)_sf$(subfactor)_ns$(n_spatial_harmonics)_nf$(n_floquet_harmonics).jld2")["E"]
 
 # dense variant
 

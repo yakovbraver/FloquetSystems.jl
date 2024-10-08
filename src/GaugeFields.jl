@@ -1,6 +1,6 @@
 module GaugeFields
 
-using FFTW, SparseArrays, Arpack, KrylovKit, FastLapackInterface, FLoops
+using FFTW, SparseArrays, FastLapackInterface, FLoops, Arpack, ArnoldiMethod
 using Distributed, SharedArrays
 using LinearAlgebra: BLAS, LAPACK, eigvals, Hermitian, diagind, eigen
 
@@ -276,16 +276,14 @@ function spectrum(gf::GaugeField{Float}, qxs::AbstractVector{<:Real}, qys::Abstr
 end
 
 struct FloquetGaugeField{Float<:AbstractFloat}
-    Q_rows::Vector{Int}
-    Q_cols::Vector{Int}
-    Q_vals::Vector{Complex{Float}}
+    Q::SparseMatrixCSC{Complex{Float}, Int64}
     u₀₀::Float # zeroth harmonic (= average) of 𝑈
     blocksize::Int # size of 𝐻ₘ
     M::Int # Floquet harmonic number (will use temporal harmonics from `-M`th to `M`th)
 end
 
 "Construct a `FloquetGaugeField` object. The cell edges will be reduced `subfactor` times. It is better to take even `n_floquet_harmonics`."
-function FloquetGaugeField(ϵ::Float, ϵc::Real, χ::Real; subfactor::Integer, n_floquet_harmonics=10, n_spatial_harmonics::Integer=32, fft_threshold::Real=1e-2) where {Float<:AbstractFloat}
+function FloquetGaugeField(ϵ::Float, ϵc::Real, χ::Real; subfactor::Integer, n_floquet_harmonics=10, n_spatial_harmonics::Integer=32, fft_threshold::Real=1e-3) where {Float<:AbstractFloat}
     if isodd(n_spatial_harmonics)
         @warn "`n_spatial_harmonics` must be even. Reducing `n_spatial_harmonics` by one."
         n_spatial_harmonics -= 1
@@ -297,15 +295,15 @@ function FloquetGaugeField(ϵ::Float, ϵc::Real, χ::Real; subfactor::Integer, n
     L = π # periodicity of the potential
     δ = L / subfactor
     gaugefields = [GaugeField(ϵ, ϵc, χ, (δ*i, δ*j); n_harmonics=n_spatial_harmonics, fft_threshold) for i in 0:subfactor-1 for j in 0:subfactor-1]
-    Q = constructQ(gaugefields, n_floquet_harmonics)
-    return FloquetGaugeField(Q..., gaugefields[1].u₀₀, (n_spatial_harmonics+1)^2, n_floquet_harmonics)
+    Q = constructQ(gaugefields, n_floquet_harmonics, fft_threshold)
+    return FloquetGaugeField(Q, gaugefields[1].u₀₀, (n_spatial_harmonics+1)^2, n_floquet_harmonics)
 end
 
 """
 Construct the quasienergy operator using temporal harmonics from `-M`th to `M`th.
 The resulting Hamiltonian will have M+1 blocks in each dimension.
 """
-function constructQ(gaugefields::Vector{GaugeField{Float}}, M::Integer) where Float<:AbstractFloat
+function constructQ(gaugefields::Vector{GaugeField{Float}}, M::Integer, fft_threshold::Real=1e-3) where Float<:AbstractFloat
     blocksize = maximum(gaugefields[1].H_rows) # size of 𝐻
     N = length(gaugefields) # number of steps in the driving sequence
     n_elems = length(gaugefields[1].H_vals) * (M+1)^2 # total number of elements in 𝑄: (M+1)^2 blocks each holding `length(gaugefields[1].H_vals)` values
@@ -333,7 +331,9 @@ function constructQ(gaugefields::Vector{GaugeField{Float}}, M::Integer) where Fl
         fill_blockband!(Q_rows, Q_cols, Q_vals, gaugefields[1].H_rows, gaugefields[1].H_cols, block_vals, m, blocksize, M+1, counter)
         counter += 2(M+1-m) * length(gaugefields[1].H_vals)
     end
-    return Q_rows, Q_cols, Q_vals
+    Q = sparse(Q_rows, Q_cols, Q_vals)
+    droptol!(Q, fft_threshold)
+    return Q
 end
 
 "Fill the `m`th block-off-diagonal of `Q` with matrices `q`. `counter` shows where to start pushing."
@@ -361,8 +361,9 @@ end
 Calculate `nsaves` quasienergies closest to `E_target` for quasimomenta `qxs` and `qys`, at driving frequency `ω`.
 The loop over `qys` is parallelised using multiprocessing.
 """
-function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}; nsaves::Integer, threshold::Real=1e-5)  where {Float<:AbstractFloat}
-    E = SharedArray{Float,3}(nsaves, length(qxs), length(qys))
+function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}; nsaves::Integer) where {Float<:AbstractFloat}
+    (;blocksize, u₀₀) = fgf
+	E = SharedArray{Float, 3}(nsaves, length(qxs), length(qys))
     
     M = Int(√fgf.blocksize) # size of each block in `H`
     j_max = (M - 1) ÷ 2  # index for each block in `H` runs in `-j_max:j_max`, giving `M` values in total
@@ -375,27 +376,31 @@ function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::
     end
 
     pmap(1:nw) do pid
-        Q = sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals)
-        droptol!(Q, threshold) # much easier to just call `droptol!` here than to rework `constructQ` (to drop values during construction)
-        Q_vals = nonzeros(Q)
+        Q_vals = nonzeros(fgf.Q)
         diagidx = findall(==(Inf), Q_vals) # find indices of diagonal elements -- we saved Inf's there (see `constructH`)
-        diagonal = Vector{Float}(undef, fgf.blocksize) # 𝑞-dependent diagonal of each diagonal block
+        diagonal = Vector{Float}(undef, blocksize) # 𝑞-dependent diagonal of each diagonal block
         for iqy in pid:nw:length(qys)
             qy = qys[iqy]
             for (iqx, qx) in enumerate(qxs)
                 for (j, jx) in enumerate(-j_max:j_max), (i, jy) in enumerate(-j_max:j_max)
-                    diagonal[(j-1)M+i] = fgf.u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2)
+                    diagonal[(j-1)M+i] = u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2) - E_target # subtract `E_target` for shift-and-invert
                 end
                 for (r_b, m) in enumerate(-m_max:m_max)
-                    Q_vals[diagidx[(r_b-1)fgf.blocksize+1:r_b*fgf.blocksize]] .= diagonal .+ m * ω
+                    Q_vals[diagidx[(r_b-1)blocksize+1:r_b*blocksize]] .= diagonal .+ m * ω
                 end
-                # Q_vals[2] += 1e-6
-                vals, _ = eigs(Q, nev=nsaves, sigma=E_target, which=:LM, tol=1e-6)
-                E[:, iqx, iqy] .= real.(vals[1:nsaves])
+                
+                # F = ldlt(fgf.Q)
+                # linmap = LinearMap{eltype(fgf.Q)}(x -> F \ x, size(fgf.Q, 1), ismutating=false)
+                # decomp, = partialschur(linmap, nev=nsaves, tol=1e-5, restarts=100, which=:LM)
+                # e_inv, _ = partialeigen(decomp)
+                # E[:, iqx, iqy] .= inv.(real.(e_inv)) .+ E_target
+                
+                vals, _ = Arpack.eigs(fgf.Q, nev=nsaves, sigma=0.0, which=:LM, tol=1e-5, maxiter=100);
+                E[:, iqx, iqy] .= real.(vals)
             end
         end
     end
-
+    
     nw > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
     
     return E
@@ -415,7 +420,7 @@ function spectrum_dense(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Tuple
 
     E = Matrix{Vector{Float}}(undef, length(qxs), length(qys))
     
-    Q_main = sparse(fgf.Q_rows, fgf.Q_cols, fgf.Q_vals) |> Matrix
+    Q_main = Matrix(fgf.Q)
     
     M = Int(√fgf.blocksize) # size of each block in `H`
     j_max = (M - 1) ÷ 2  # index for each block in `H` runs in `-j_max:j_max`, giving `M` values in total
