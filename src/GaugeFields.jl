@@ -1,6 +1,6 @@
 module GaugeFields
 
-using FFTW, SparseArrays, FastLapackInterface, FLoops, Arpack, ArnoldiMethod
+using FFTW, SparseArrays, FastLapackInterface, FLoops, Arpack, ArnoldiMethod, LinearMaps, LDLFactorizations
 using Distributed, SharedArrays
 using LinearAlgebra: BLAS, LAPACK, eigvals, Hermitian, diagind, eigen
 
@@ -368,7 +368,7 @@ function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::
     M = Int(√fgf.blocksize) # size of each block in `H`
     j_max = (M - 1) ÷ 2  # index for each block in `H` runs in `-j_max:j_max`, giving `M` values in total
     m_max = fgf.M ÷ 2
-    
+
     nw = nworkers()
     if nw > 1
         nblas = BLAS.get_num_threads() # save original number of threads to restore later
@@ -379,6 +379,7 @@ function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::
         Q_vals = nonzeros(fgf.Q)
         diagidx = findall(==(Inf), Q_vals) # find indices of diagonal elements -- we saved Inf's there (see `constructH`)
         diagonal = Vector{Float}(undef, blocksize) # 𝑞-dependent diagonal of each diagonal block
+        LDL = ldl_analyze(fgf.Q)
         for iqy in pid:nw:length(qys)
             qy = qys[iqy]
             for (iqx, qx) in enumerate(qxs)
@@ -388,15 +389,14 @@ function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::
                 for (r_b, m) in enumerate(-m_max:m_max)
                     Q_vals[diagidx[(r_b-1)blocksize+1:r_b*blocksize]] .= diagonal .+ m * ω
                 end
+                ldl_factorize!(fgf.Q, LDL)
+                linmap = LinearMap{eltype(fgf.Q)}((y, x) -> ldiv!(y, LDL, x), size(fgf.Q, 1), ismutating=true)
+                decomp, = partialschur(linmap, nev=nsaves, tol=1e-5, restarts=100, which=:LM)
+                e_inv, _ = partialeigen(decomp)
+                E[:, iqx, iqy] .= inv.(real.(e_inv)) .+ E_target
                 
-                # F = ldlt(fgf.Q)
-                # linmap = LinearMap{eltype(fgf.Q)}(x -> F \ x, size(fgf.Q, 1), ismutating=false)
-                # decomp, = partialschur(linmap, nev=nsaves, tol=1e-5, restarts=100, which=:LM)
-                # e_inv, _ = partialeigen(decomp)
-                # E[:, iqx, iqy] .= inv.(real.(e_inv)) .+ E_target
-                
-                vals, _ = Arpack.eigs(fgf.Q, nev=nsaves, sigma=0.0, which=:LM, tol=1e-5, maxiter=100);
-                E[:, iqx, iqy] .= real.(vals)
+                # vals, _ = Arpack.eigs(fgf.Q, nev=nsaves, sigma=0.0, which=:LM, tol=1e-5, maxiter=100);
+                # E[:, iqx, iqy] .= real.(vals) .+ E_target
             end
         end
     end
