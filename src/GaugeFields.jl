@@ -1,7 +1,6 @@
 module GaugeFields
 
-using FFTW, SparseArrays, FastLapackInterface, FLoops, Arpack, ArnoldiMethod, LinearMaps, LDLFactorizations
-using Distributed, SharedArrays
+using FFTW, SparseArrays, FastLapackInterface, FLoops, ArnoldiMethod, LinearMaps, LDLFactorizations
 using LinearAlgebra: BLAS, LAPACK, eigvals, Hermitian, diagind, eigen
 
 export GaugeField,
@@ -362,48 +361,55 @@ Calculate `nsaves` quasienergies closest to `E_target` for quasimomenta `qxs` an
 The loop over `qys` is parallelised using multiprocessing.
 """
 function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}; nsaves::Integer) where {Float<:AbstractFloat}
+    nthreads = Threads.nthreads()
+    if nthreads > 1
+        nblas = BLAS.get_num_threads() # save original number of threads to restore later
+        BLAS.set_num_threads(1)
+    end
+
     (;blocksize, u₀₀) = fgf
-	E = SharedArray{Float, 3}(nsaves, length(qxs), length(qys))
+	E = Array{Float, 3}(undef, nsaves, length(qxs), length(qys))
     
     M = Int(√fgf.blocksize) # size of each block in `H`
     j_max = (M - 1) ÷ 2  # index for each block in `H` runs in `-j_max:j_max`, giving `M` values in total
     m_max = fgf.M ÷ 2
 
-    nw = nworkers()
-    if nw > 1
-        nblas = BLAS.get_num_threads() # save original number of threads to restore later
-        BLAS.set_num_threads(1)
-    end
-
-    pmap(1:nw) do pid
-        Q_vals = nonzeros(fgf.Q)
-        diagidx = findall(==(Inf), Q_vals) # find indices of diagonal elements -- we saved Inf's there (see `constructH`)
-        diagonal = Vector{Float}(undef, blocksize) # 𝑞-dependent diagonal of each diagonal block
-        LDL = ldl_analyze(fgf.Q)
-        for iqy in pid:nw:length(qys)
-            qy = qys[iqy]
-            for (iqx, qx) in enumerate(qxs)
-                for (j, jx) in enumerate(-j_max:j_max), (i, jy) in enumerate(-j_max:j_max)
-                    diagonal[(j-1)M+i] = u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2) - E_target # subtract `E_target` for shift-and-invert
-                end
-                for (r_b, m) in enumerate(-m_max:m_max)
-                    Q_vals[diagidx[(r_b-1)blocksize+1:r_b*blocksize]] .= diagonal .+ m * ω
-                end
-                ldl_factorize!(fgf.Q, LDL)
-                linmap = LinearMap{eltype(fgf.Q)}((y, x) -> ldiv!(y, LDL, x), size(fgf.Q, 1), ismutating=true)
-                decomp, = partialschur(linmap, nev=nsaves, tol=1e-5, restarts=100, which=:LM)
-                e_inv, _ = partialeigen(decomp)
-                E[:, iqx, iqy] .= inv.(real.(e_inv)) .+ E_target
-                
-                # vals, _ = Arpack.eigs(fgf.Q, nev=nsaves, sigma=0.0, which=:LM, tol=1e-5, maxiter=100);
-                # E[:, iqx, iqy] .= real.(vals) .+ E_target
+    Cmplx = Complex{Float}
+    krylovdim = 2nsaves
+    diagidx = findall(==(Inf), nonzeros(fgf.Q)) # find indices of diagonal elements -- we saved Inf's there (see `constructH`)
+    
+    @floop for (iqy, qy) in enumerate(qys)
+        @init begin
+            Q = copy(fgf.Q)
+            Q_vals = nonzeros(Q)
+            diagonal = Vector{Float}(undef, blocksize) # 𝑞-dependent diagonal of each diagonal block
+            LDL = ldl_analyze(fgf.Q)
+            arnoldi_ws = ArnoldiWorkspace(Cmplx, size(fgf.Q, 1), krylovdim)
+        end
+        for (iqx, qx) in enumerate(qxs)
+            for (j, jx) in enumerate(-j_max:j_max), (i, jy) in enumerate(-j_max:j_max)
+                diagonal[(j-1)M+i] = u₀₀ + qx^2 + qy^2 + 4(qx*jx + qy*jy) + 4(jx^2 + jy^2) - E_target # subtract `E_target` for shift-and-invert
             end
+            for (r_b, m) in enumerate(-m_max:m_max)
+                Q_vals[diagidx[(r_b-1)blocksize+1:r_b*blocksize]] .= diagonal .+ m * ω
+            end
+            ldl_factorize!(Q, LDL) # changes (updates) `LDL`, not `Q`
+            S, = partialschur!(make_linmap(Q, LDL), arnoldi_ws; nev=nsaves, tol=1e-5, restarts=100, which=:LM)
+            E[:, iqx, iqy] .= inv.(real.(S.eigenvalues)) .+ E_target
         end
     end
     
-    nw > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
+    nthreads > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
     
     return E
+end
+
+"""
+Having this as a separate function reduces allocation by tens of MB.
+Probably this way the anonymous function gets properly compiled.
+"""
+function make_linmap(M, LDL)
+    LinearMap{eltype(M)}((y, x) -> ldiv!(y, LDL, x), size(M, 1), ismutating=true)
 end
 
 """
