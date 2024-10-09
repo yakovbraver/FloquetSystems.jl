@@ -50,8 +50,8 @@ struct GaugeField{Float<:AbstractFloat}
     χ::Float
     δ::Tuple{Float,Float} # shift (δ𝑥, δ𝑦)
     u₀₀::Float # zeroth harmonic (= average) of 𝑈
-    H_rows::Vector{Int}
-    H_cols::Vector{Int}
+    H_rows::Vector{Int32}
+    H_cols::Vector{Int32}
     H_vals::Vector{Complex{Float}}
 end
 
@@ -81,8 +81,8 @@ function constructH(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}, M:
     u = rfft(U) |> real # guaranteed to be real (and even) because `U` is real and even
     n_elem = filter_count!(u; fft_threshold) # filter small values and calculate the number of elements in the final Hamiltonian
     
-    H_rows = Vector{Int}(undef, n_elem)
-    H_cols = Vector{Int}(undef, n_elem)
+    H_rows = Vector{Int32}(undef, n_elem)
+    H_cols = Vector{Int32}(undef, n_elem)
     H_vals = Vector{Complex{Float}}(undef, n_elem)
     u₀₀ = u[1, 1] # save the secular component.
     u[1, 1] = 0 # remove because it breaks the structure in `filter_count!` if included
@@ -275,7 +275,7 @@ function spectrum(gf::GaugeField{Float}, qxs::AbstractVector{<:Real}, qys::Abstr
 end
 
 struct FloquetGaugeField{Float<:AbstractFloat}
-    Q::SparseMatrixCSC{Complex{Float}, Int64}
+    Q::SparseMatrixCSC{Complex{Float}, Int32}
     u₀₀::Float # zeroth harmonic (= average) of 𝑈
     blocksize::Int # size of 𝐻ₘ
     M::Int # Floquet harmonic number (will use temporal harmonics from `-M`th to `M`th)
@@ -306,8 +306,8 @@ function constructQ(gaugefields::Vector{GaugeField{Float}}, M::Integer, fft_thre
     blocksize = maximum(gaugefields[1].H_rows) # size of 𝐻
     N = length(gaugefields) # number of steps in the driving sequence
     n_elems = length(gaugefields[1].H_vals) * (M+1)^2 # total number of elements in 𝑄: (M+1)^2 blocks each holding `length(gaugefields[1].H_vals)` values
-    Q_rows = Vector{Int}(undef, n_elems)
-    Q_cols = Vector{Int}(undef, n_elems)
+    Q_rows = Vector{Int32}(undef, n_elems)
+    Q_cols = Vector{Int32}(undef, n_elems)
     Q_vals = Vector{Complex{Float}}(undef, n_elems)
     block_vals = similar(gaugefields[1].H_vals) # for storing summed stroboscopic drives
     
@@ -393,8 +393,8 @@ function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::
             for (r_b, m) in enumerate(-m_max:m_max)
                 Q_vals[diagidx[(r_b-1)blocksize+1:r_b*blocksize]] .= diagonal .+ m * ω
             end
-            ldl_factorize!(Q, LDL) # changes (updates) `LDL`, not `Q`
-            S, = partialschur!(make_linmap(Q, LDL), arnoldi_ws; nev=nsaves, tol=1e-5, restarts=100, which=:LM)
+            ldl_factorize!(Q, LDL) # mutates (updates) `LDL`, does not alter `Q`
+            S, = partialschur!(make_linmap(Q, LDL), arnoldi_ws; nev=nsaves, tol=1e-5, restarts=100, which=:LM) # allocates 70-200 KiB
             E[:, iqx, iqy] .= inv.(real.(S.eigenvalues)) .+ E_target
         end
     end
