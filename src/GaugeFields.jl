@@ -35,7 +35,7 @@ end
 
 "Return the magnetic field 𝐵(𝑥, 𝑦), which is the 𝑧-component."
 function 𝐵(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, ϵc::Real, χ::Real)
-    [2(cos(2x) - cos(2y)) * ϵc * ϵ^2 * (1+ϵc^2) * sin(χ) / 𝛼(x, y; ϵ, ϵc, χ) for x in xs, y in ys]
+    [2(cos(2x) - cos(2y)) * ϵc * ϵ^2 * (1+ϵc^2) * sin(χ) / 𝛼(x, y; ϵ, ϵc, χ)^2 for x in xs, y in ys]
 end
 
 "Helper function for calculating the gauge potential 𝑈."
