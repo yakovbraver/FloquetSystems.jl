@@ -77,3 +77,36 @@ end
     ]
     @test Q == Q_true
 end
+
+@testset "Test `fillkronmatrix!`" begin
+    M = 1
+
+    n_diag = (2M+1)^2 # number of diagonal elements in 𝐻
+    n_elem = 4(2M)^2 + n_diag
+    
+    H_rows = Vector{Int}(undef, n_elem)
+    H_cols = Vector{Int}(undef, n_elem)
+    H_vals = Vector{Int}(undef, n_elem)
+
+    counter = GaugeFields.fillkronmatrix!(H_rows, H_cols, H_vals; nx=1, ny=1, c=1, M, position=(1, 3), counter=1)
+    B13 = diagm(4 => [1, 1, 0, 1, 1])
+    counter = GaugeFields.fillkronmatrix!(H_rows, H_cols, H_vals; nx=1, ny=-1, c=2, M, position=(2, 3), counter)
+    B23 = diagm(-2 => [0, 2, 2, 0, 2, 2, 0])
+    counter = GaugeFields.fillkronmatrix!(H_rows, H_cols, H_vals; nx=-1, ny=1, c=3, M, position=(3, 1), counter)
+    B31 = diagm(2 => [0, 3, 3, 0, 3, 3, 0])
+    counter = GaugeFields.fillkronmatrix!(H_rows, H_cols, H_vals; nx=-1, ny=-1, c=4, M, position=(3, 2), counter)
+    B32 = diagm(-4 => [4, 4, 0, 4, 4])
+    counter = GaugeFields.fillkronmatrix!(H_rows, H_cols, H_vals; nx=0, ny=0, c=5, M, position=(3, 3), counter)
+    B33 = Diagonal(fill(5, 9))
+    
+    H = Matrix(sparse(H_rows, H_cols, H_vals));
+
+    Z = zeros(Int, size(B33))
+    H_true = [
+        Z   Z   B13
+        Z   Z   B23
+        B31 B32 B33
+    ]
+    
+    @test H == H_true
+end

@@ -471,4 +471,60 @@ function spectrum_dense(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Tuple
     return E
 end
 
+struct FullHamiltonian{Float<:AbstractFloat}
+    ϵ::Float
+    ϵc::Float
+    Ωₚ::Float
+    χ::Float
+    δ::Tuple{Float,Float} # shift (δ𝑥, δ𝑦)
+    H::SparseMatrixCSC{Complex{Float}, Int32}
+end
+
+# """
+# Construct a `GaugeField` object.
+# `n_harmonics` is the number of positive harmonics; coordinates will be discretised using `2n_harmonics` points.
+# """
+# function FullHamiltonian(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}=(0, 0); n_harmonics::Integer=32) where {Float<:AbstractFloat}
+#     H = constructFullH(ϵ, ϵc, χ, δ, n_harmonics)
+#     return FullHamiltonian(ϵ, Float(ϵc), Float(χ), Float.(δ), H...)
+# end
+
+"""
+Construct the Hamiltonian matrix by filling `gf.H_rows`, `gf.H_cols`, and `gf.H_vals`.
+Coordinates will be discretised using 2M points, yielding spatial harmonics from `-M`th to `M`th.
+The resulting Hamiltonian will be (M+1) × (M+1).
+"""
+function constructFullH(ϵ::Float, ϵc::Real, χ::Real, Ωₚ::Real, δ::Tuple{<:Real,<:Real}, M::Integer) where {Float<:AbstractFloat}
+    n_diag = (2M+1)^2 # number of diagonal elements in 𝐻
+    n_elem = 8(2M)^2 + 7n_diag
+    H_rows = Vector{Int32}(undef, n_elem)
+    H_cols = Vector{Int32}(undef, n_elem)
+    H_vals = Vector{Complex{Float}}(undef, n_elem)
+
+    fillkronmatrix!(H_rows, H_cols, H_vals; nx=1, ny=-1, counter=1, c=cis(χ/2+δ[1]-δ[2]), M, position=(1, 1))
+    
+    # fill positions of the diagonal elements
+    H_rows[end-n_diag+1:end] .= 1:n_diag
+    H_cols[end-n_diag+1:end] .= 1:n_diag
+    H_vals[end-n_diag+1:end] .= 0 # mark with zeros to later locate the diagonal values in `nonzeros(H)` easily. `fft_to_matrix!` does not save the zero entries so that the only zeros will be the diagonal ones
+
+    return H_rows, H_cols, H_vals
+end
+
+"""
+Fill sparse matrix stored in `rows`, `cols`, `vals` with a block containing cδ_{j'_x,j_x+n_x}δ_{j'_y,j_y+n_y}. j_x and j_y run from `-M` to `M`.
+`position` allows to offset the block by a number of like-sized blocks (2M+1)²×(2M+1)². `counter` shows where to push.
+"""
+function fillkronmatrix!(rows::Vector{<:Integer}, cols::Vector{<:Integer}, vals::Vector{<:Number}; nx::Integer, ny::Integer, counter::Integer, c::Number, M::Integer, position=(1, 1))
+    b = 2M+1
+    offset = (position .- 1) .* b^2
+    for jx in max(1, 1-nx):min(b, b-nx), jy in max(1, 1-ny):min(b, b-ny)
+        rows[counter] = offset[1] + (jy-1) * b + jx
+        cols[counter] = offset[2] + (jy+ny-1) * b + jx+nx
+        vals[counter] = c
+        counter += 1
+    end
+    return counter
+end
+
 end
