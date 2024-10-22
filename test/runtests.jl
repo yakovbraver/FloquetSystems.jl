@@ -1,7 +1,7 @@
 include("../src/GaugeFields.jl")
 using .GaugeFields
 using Test
-using SparseArrays, FFTW
+using SparseArrays, FFTW, LinearAlgebra
 
 @testset "Basic tests" begin
 

@@ -8,7 +8,8 @@ export GaugeField,
     spectrum,
     make_wavefunction,
     q0_states,
-    FloquetGaugeField
+    FloquetGaugeField,
+    FullHamiltonian
 
 "Return the 2D gauge potential 𝑈."
 function 𝑈(xs::AbstractVector{<:Real}, ys::AbstractVector{<:Real}; ϵ::Real, ϵc::Real, χ::Real)
@@ -358,7 +359,7 @@ end
 
 """
 Calculate `nsaves` quasienergies closest to `E_target` for quasimomenta `qxs` and `qys`, at driving frequency `ω`.
-The loop over `qys` is parallelised using multiprocessing.
+The loop over `qys` is multithreaded.
 """
 function spectrum(fgf::FloquetGaugeField{Float}, ω::Real, E_target::Real, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}; nsaves::Integer) where {Float<:AbstractFloat}
     nthreads = Threads.nthreads()
@@ -474,45 +475,58 @@ end
 struct FullHamiltonian{Float<:AbstractFloat}
     ϵ::Float
     ϵc::Float
-    Ωₚ::Float
     χ::Float
+    Ωₚ::Float
     δ::Tuple{Float,Float} # shift (δ𝑥, δ𝑦)
+    M::Int # j_x and j_y indices will run from -M to M
     H::SparseMatrixCSC{Complex{Float}, Int32}
 end
 
-# """
-# Construct a `GaugeField` object.
-# `n_harmonics` is the number of positive harmonics; coordinates will be discretised using `2n_harmonics` points.
-# """
-# function FullHamiltonian(ϵ::Float, ϵc::Real, χ::Real, δ::Tuple{<:Real,<:Real}=(0, 0); n_harmonics::Integer=32) where {Float<:AbstractFloat}
-#     H = constructFullH(ϵ, ϵc, χ, δ, n_harmonics)
-#     return FullHamiltonian(ϵ, Float(ϵc), Float(χ), Float.(δ), H...)
-# end
+"""
+Construct a `FullHamiltonian` object.
+`n_harmonics` is the number of positive harmonics; basis will consist of `2n_harmonics+1` states.
+"""
+function FullHamiltonian(ϵ::Float, ϵc::Real, χ::Real, Ωₚ::Real, δ::Tuple{<:Real,<:Real}=(0, 0); n_harmonics::Integer=32) where {Float<:AbstractFloat}
+    H = constructFullH(ϵ, ϵc, χ, Ωₚ, δ, n_harmonics)
+    return FullHamiltonian(ϵ, Float(ϵc), Float(χ), Float(Ωₚ), Float.(δ), n_harmonics, H)
+end
 
 """
 Construct the Hamiltonian matrix by filling `gf.H_rows`, `gf.H_cols`, and `gf.H_vals`.
 Coordinates will be discretised using 2M points, yielding spatial harmonics from `-M`th to `M`th.
-The resulting Hamiltonian will be (M+1) × (M+1).
+The resulting Hamiltonian will be 3(2M+1)² × 3(2M+1)².
 """
 function constructFullH(ϵ::Float, ϵc::Real, χ::Real, Ωₚ::Real, δ::Tuple{<:Real,<:Real}, M::Integer) where {Float<:AbstractFloat}
-    n_diag = (2M+1)^2 # number of diagonal elements in 𝐻
-    n_elem = 8(2M)^2 + 7n_diag
+    n_diag = (2M+1)^2 # number of diagonal elements in each of the nine blocks of the full 𝐻
+    n_elem = 8(2M)^2 + 5n_diag
     H_rows = Vector{Int32}(undef, n_elem)
     H_cols = Vector{Int32}(undef, n_elem)
     H_vals = Vector{Complex{Float}}(undef, n_elem)
 
-    fillkronmatrix!(H_rows, H_cols, H_vals; nx=1, ny=-1, counter=1, c=cis(χ/2+δ[1]-δ[2]), M, position=(1, 1))
-    
-    # fill positions of the diagonal elements
-    H_rows[end-n_diag+1:end] .= 1:n_diag
-    H_cols[end-n_diag+1:end] .= 1:n_diag
-    H_vals[end-n_diag+1:end] .= 0 # mark with zeros to later locate the diagonal values in `nonzeros(H)` easily. `fft_to_matrix!` does not save the zero entries so that the only zeros will be the diagonal ones
+    ### place Ω₁. NOTE: we assume Hamiltonian contains Ω, not Ω/2
+    counter = fillkronmatrix!(H_rows, H_cols, H_vals; nx=0, ny=0, counter=1, c=Ωₚ', M, position=(1, 3))
+    counter = fillkronmatrix!(H_rows, H_cols, H_vals; nx=0, ny=0, counter, c=Ωₚ, M, position=(3, 1))
 
-    return H_rows, H_cols, H_vals
+    ### place Ω₂
+    f = Ωₚ / (2ϵ*√(1+ϵc^2))
+    for nx in (-1, 1), ny in (-1, 1)
+        c = nx*ny * f * cis(-nx*ny*χ/2 + nx*δ[1] + ny*δ[2])
+        (nx == ny) && (c *= ϵc)
+        counter = fillkronmatrix!(H_rows, H_cols, H_vals; nx, ny, counter, c=c', M, position=(2, 3))
+        counter = fillkronmatrix!(H_rows, H_cols, H_vals; nx, ny, counter, c, M, position=(3, 2))
+    end
+
+    # fill positions of the diagonal elements
+    H_rows[end-3n_diag+1:end] .= 1:3n_diag
+    H_cols[end-3n_diag+1:end] .= 1:3n_diag
+    H_vals[end-3n_diag+1:end] .= Inf # mark with Inf's to later locate the diagonal values in `nonzeros(H)` easily
+
+    return sparse(H_rows, H_cols, H_vals)
 end
 
 """
-Fill sparse matrix stored in `rows`, `cols`, `vals` with a block containing cδ_{j'_x,j_x+n_x}δ_{j'_y,j_y+n_y}. j_x and j_y run from `-M` to `M`.
+Fill sparse matrix stored in `rows`, `cols`, `vals` with a block containing cδ_{j'_x,j_x+n_x}δ_{j'_y,j_y+n_y}.
+primed are row indices. j_x and j_y run from `-M` to `M`.
 `position` allows to offset the block by a number of like-sized blocks (2M+1)²×(2M+1)². `counter` shows where to push.
 """
 function fillkronmatrix!(rows::Vector{<:Integer}, cols::Vector{<:Integer}, vals::Vector{<:Number}; nx::Integer, ny::Integer, counter::Integer, c::Number, M::Integer, position=(1, 1))
@@ -525,6 +539,98 @@ function fillkronmatrix!(rows::Vector{<:Integer}, cols::Vector{<:Integer}, vals:
         counter += 1
     end
     return counter
+end
+
+"""
+Calculate energy dispersion for `nsaves` lowest levels for a quarter of the BZ, since ℤ₄ symmetry is assumed.
+This quarter is discretised with `n_q` points in each direction.
+"""
+function spectrum(fh::FullHamiltonian{Float}, n_q::Integer; nsaves::Integer=1) where {Float<:AbstractFloat}
+    nthreads = Threads.nthreads()
+    if nthreads > 1
+        nblas = BLAS.get_num_threads() # save original number of threads to restore later
+        BLAS.set_num_threads(1)
+    end
+
+	E = Array{Float, 3}(undef, nsaves, n_q, n_q)
+    blocksize = (2fh.M+1)^2
+
+    Cmplx = Complex{Float}
+    krylovdim = max(20, 2nsaves)
+    diagidx = findall(==(Inf), nonzeros(fh.H)) # find indices of diagonal elements -- we saved Inf's there (see `constructH`)
+
+    L = 2π
+    qs = range(0.01, (2π/L)/2, length=n_q) # using 0.01 because ldl fails for 0
+    @floop for (iqx, qx) in enumerate(qs)
+        @init begin
+            H = copy(fh.H)
+            H_vals = nonzeros(H)
+            diagonal = Vector{Float}(undef, blocksize) # 𝑞-dependent diagonal of each diagonal block
+            LDL = ldl_analyze(H)
+            arnoldi_ws = ArnoldiWorkspace(Cmplx, size(H, 1), krylovdim)
+        end
+        for iqy in iqx:n_q
+            qy = qs[iqy]
+            for (j, jx) in enumerate(-fh.M:fh.M), (i, jy) in enumerate(-fh.M:fh.M)
+                diagonal[(j-1)*(2fh.M+1)+i] = qx^2 + qy^2 + 4π/L * (qx*jx + qy*jy) + 4(π/L)^2 * (jx^2 + jy^2)
+            end
+            for r_b in 1:3
+                H_vals[diagidx[(r_b-1)blocksize+1:r_b*blocksize]] .= diagonal
+            end
+            ldl_factorize!(H, LDL) # mutates (updates) `LDL`, does not alter `H`
+            S, = partialschur!(make_linmap(H, LDL), arnoldi_ws; nev=nsaves, tol=1e-5, restarts=100, which=:LM) # allocates 70-200 KiB
+            E[:, iqx, iqy] .= E[:, iqy, iqx] .= inv.(real.(S.eigenvalues))
+        end
+    end
+    
+    nthreads > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
+    
+    return E
+end
+
+"""
+Calculate energy dispersion for `nsaves` lowest levels for the given 𝑞's.
+"""
+function spectrum(fh::FullHamiltonian{Float}, qxs::AbstractVector{<:Real}, qys::AbstractVector{<:Real}; nsaves::Integer=1) where {Float<:AbstractFloat}
+    nthreads = Threads.nthreads()
+    if nthreads > 1
+        nblas = BLAS.get_num_threads() # save original number of threads to restore later
+        BLAS.set_num_threads(1)
+    end
+
+	E = Array{Float, 3}(undef, nsaves, length(qxs), length(qys))
+    blocksize = (2fh.M+1)^2
+
+    Cmplx = Complex{Float}
+    krylovdim = max(20, 2nsaves)
+    diagidx = findall(==(Inf), nonzeros(fh.H)) # find indices of diagonal elements -- we saved Inf's there (see `constructH`)
+
+    L = 2π
+    @floop for (iqx, qx) in enumerate(qxs)
+        @init begin
+            H = copy(fh.H)
+            H_vals = nonzeros(H)
+            diagonal = Vector{Float}(undef, blocksize) # 𝑞-dependent diagonal of each diagonal block
+            LDL = ldl_analyze(H)
+            arnoldi_ws = ArnoldiWorkspace(Cmplx, size(H, 1), krylovdim)
+        end
+
+        for (iqy, qy) in enumerate(qys)
+            for (j, jx) in enumerate(-fh.M:fh.M), (i, jy) in enumerate(-fh.M:fh.M)
+                diagonal[(j-1)*(2fh.M+1)+i] = qx^2 + qy^2 + 4π/L * (qx*jx + qy*jy) + 4(π/L)^2 * (jx^2 + jy^2)
+            end
+            for r_b in 1:3
+                H_vals[diagidx[(r_b-1)blocksize+1:r_b*blocksize]] .= diagonal
+            end
+            ldl_factorize!(H, LDL) # mutates (updates) `LDL`, does not alter `H`
+            S, = partialschur!(make_linmap(H, LDL), arnoldi_ws; nev=nsaves, tol=1e-5, restarts=100, which=:LM) # allocates 70-200 KiB
+            E[:, iqx, iqy] .= inv.(real.(S.eigenvalues))
+        end
+    end
+    
+    nthreads > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
+    
+    return E
 end
 
 end

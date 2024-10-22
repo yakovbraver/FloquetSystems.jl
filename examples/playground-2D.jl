@@ -1,5 +1,4 @@
 includet("../src/GaugeFields.jl")
-# @everywhere include("src/GaugeFields.jl")
 using .GaugeFields
 
 using Plots, LaTeXStrings, JLD2, LinearAlgebra, SparseArrays
@@ -66,8 +65,18 @@ savefig("divA.pdf")
 
 ### Magnetic field
 B = 𝐵(x, x; ϵ, ϵc, χ)
-heatmap(x ./ 2π, x ./ 2π, B', c=:coolwarm, xlabel=L"x / a", ylabel=L"y / a", title=L"B_z(x,y)") # plot x in units of 𝑎 = 2π/kᵣ
+B = 𝐵(x, y; ϵ, ϵc, χ)
+heatmap(x ./ 2π, x ./ 2π, abs.(B'), c=cmap_rainbow, xlabel=L"x / a", ylabel=L"y / a", title=L"B_z(x,y)") # plot x in units of 𝑎 = 2π/kᵣ
 savefig("B.pdf")
+
+# integral
+using Random
+# 𝑥 ∈ [0.125, 0.375]; 𝑦 ∈ [-0.125, 0.125]
+n = 400
+x = range(0.15, 0.35, n) .* 2π
+y = range(-0.1, 0.1, n) .* 2π
+dx = x[2] - x[1]
+sum(𝐵(x, y; ϵ, ϵc, χ)) * dx^2
 
 ### Lowest band dispersion
 gf = GaugeField(ϵ, ϵc, χ; n_harmonics=20);
@@ -116,13 +125,13 @@ scatter(e[:, 1, 1], markersize=1, markerstrokewidth=0)
 
 ### Floquet spectrum
 
-ω = 400
-n_spatial_harmonics = 24
+ω = 2000
+n_spatial_harmonics = 66
 n_floquet_harmonics = 4
-ϵ = 0.1
+ϵ = 0.1f0
 ϵc = 1
 χ = 0
-@time fgf = FloquetGaugeField(ϵ, ϵc, χ; subfactor=3, n_floquet_harmonics, n_spatial_harmonics, fft_threshold=1e-5);
+@time fgf = FloquetGaugeField(ϵ, ϵc, χ; subfactor=3, n_floquet_harmonics, n_spatial_harmonics, fft_threshold=1e-2);
 
 # sparse variant
 
@@ -130,7 +139,7 @@ E_target = 12
 qys = range(-1, 1, 256)
 qxs = [0]
 @time E = spectrum(fgf, ω, E_target, qxs, qys; nsaves=50);
-scatter(qys, E[:, 1, :]', c=1, markerstrokewidth=0, markersize=1, legend=false,
+scatter(qys, E[:, 1, :]', c=1, markerstrokewidth=0, markersize=1, legend=false, ylims=(E_target-6, E_target+6),
         title=L"\omega=%$(ω)", xlabel=L"q_x/k_R", ylabel="quasienergy")
 savefig("omega$(ω).png")
 jldsave("omega$(ω)_ns$(n_spatial_harmonics)_nf$(n_floquet_harmonics).jld2"; E)
@@ -157,3 +166,26 @@ fig
 subfactor = 3
 savefig("omega$(ω)_sf$(subfactor).png")
 E = load("omega$(ω)_sf$(subfactor)_ns$(n_spatial_harmonics)_nf$(n_floquet_harmonics).jld2")["E"]
+
+### Full theory
+
+x = range(-0.1*2π, 2π*1.1, 500) # in units of 1/kᵣ
+ϵ = 0.1f0
+ϵc = 1
+χ = 0
+Ωₚ = 2000
+
+fh = GaugeFields.FullHamiltonian(ϵ, ϵc, χ, Ωₚ; n_harmonics=20);
+n_q = 64
+L = 2π
+qxs = range(-(2π/L)/2, (2π/L)/2, length=n_q)
+qys = [0]
+@time S = spectrum(fh, qxs, qys; nsaves=20)
+scatter(qxs, S[:, :, 1]', c=1, markerstrokewidth=0, legend=false, markersize=2)
+
+n_q = 20
+@time S = spectrum(fh, n_q; nsaves=20)
+E = S[1, :, :]
+E2 = reverse(E, dims=2); E3 = reverse(E2, dims=1); E4 = reverse(E, dims=1); E_full = [E3 E4; E2 E] # not entirely correct because central axes are contained twice
+surface(E_full, c=CMAP)
+heatmap(E_full, c=CMAP, clims=(1.9, 2.2))
