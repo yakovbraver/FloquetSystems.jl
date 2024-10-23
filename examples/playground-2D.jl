@@ -169,21 +169,24 @@ E = load("omega$(ω)_sf$(subfactor)_ns$(n_spatial_harmonics)_nf$(n_floquet_harmo
 
 ### Full theory
 
-x = range(-0.1*2π, 2π*1.1, 500) # in units of 1/kᵣ
-ϵ = 0.1f0
+ϵ = 0.1
 ϵc = 1
 χ = 0
-Ωₚ = 2000
+Ωₚ = 1000
+Γ = 1000
 
-fh = GaugeFields.FullHamiltonian(ϵ, ϵc, χ, Ωₚ; n_harmonics=20);
+fh = GaugeFields.FullHamiltonian(ϵ, ϵc, χ, Ωₚ, Γ; n_harmonics=100);
 n_q = 64
 L = 2π
 qxs = range(-(2π/L)/2, (2π/L)/2, length=n_q)
 qys = [0]
 @time S = spectrum(fh, qxs, qys; nsaves=20)
-scatter(qxs, S[:, :, 1]', c=1, markerstrokewidth=0, legend=false, markersize=2)
 
-n_q = 20
+scatter(qxs, real.(S[:, :, 1]'), c=1, markerstrokewidth=0, legend=false, markersize=2)
+scatter(qxs, imag.(S[:, :, 1]'), c=1, markerstrokewidth=0, legend=false, markersize=2)
+
+fh = GaugeFields.FullHamiltonian(ϵ, ϵc, χ, Ωₚ, Γ; n_harmonics=30);
+n_q = 10
 @time S = spectrum(fh, n_q; nsaves=20)
 E = S[1, :, :]
 E2 = reverse(E, dims=2); E3 = reverse(E2, dims=1); E4 = reverse(E, dims=1); E_full = [E3 E4; E2 E] # not entirely correct because central axes are contained twice
