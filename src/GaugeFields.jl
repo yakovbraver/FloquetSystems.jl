@@ -571,7 +571,7 @@ function spectrum(fh::FullHamiltonian{Float}, n_q::Integer; E_target::Real=2, ns
     H_v[diagidx] .= 1 # otherwise initial `lu` fails (because of Inf's)
 
     L = 2π
-    qs = range(0.01, (2π/L)/2, length=n_q) # using 0.01 because ldl fails for 0
+    qs = range(0, (2π/L)/2, length=n_q)
     @floop for (iqx, qx) in enumerate(qs)
         @init begin
             H = copy(fh.H)
@@ -583,13 +583,13 @@ function spectrum(fh::FullHamiltonian{Float}, n_q::Integer; E_target::Real=2, ns
         for iqy in iqx:n_q
             qy = qs[iqy]
             for (j, jx) in enumerate(-fh.M:fh.M), (i, jy) in enumerate(-fh.M:fh.M)
-                diagonal[(j-1)*(2fh.M+1)+i] = qx^2 + qy^2 + 4π/L * (qx*jx + qy*jy) + 4(π/L)^2 * (jx^2 + jy^2) + im*fh.Γ - E_target
+                diagonal[(j-1)*(2fh.M+1)+i] = qx^2 + qy^2 + 4π/L * (qx*jx + qy*jy) + 4(π/L)^2 * (jx^2 + jy^2) - E_target
             end
             for r_b in 1:3
                 H_vals[diagidx[(r_b-1)blocksize+1:r_b*blocksize]] .= diagonal .- (r_b == 3) * im*fh.Γ
             end
             lu!(F, H)
-            S, = partialschur!(make_linmap_nonmutating(H, F), arnoldi_ws; nev=nsaves, tol=1e-5, restarts=100, which=:LM) # the linmap allocates as no inplace ldiv! exists for the object returned by sparse lu :(
+            S, = partialschur!(make_linmap_nonmutating(H, F), arnoldi_ws; nev=nsaves, tol=1e-5, restarts=100, which=:LM) # linmap allocates as no inplace ldiv! exists for the object returned by sparse lu :(
             E[:, iqx, iqy] .= E[:, iqy, iqx] .= inv.(S.eigenvalues) .+ E_target
         end
     end
@@ -635,7 +635,7 @@ function spectrum(fh::FullHamiltonian{Float}, qxs::AbstractVector{<:Real}, qys::
                 H_vals[diagidx[(r_b-1)blocksize+1:r_b*blocksize]] .= diagonal .- (r_b == 3) * im*fh.Γ
             end
             lu!(F, H)
-            S, = partialschur!(make_linmap_nonmutating(H, F), arnoldi_ws; nev=nsaves, tol=1e-5, restarts=200, which=:LM) # the linmap allocates as no inplace ldiv! exists for the object returned by sparse lu :(
+            S, = partialschur!(make_linmap_nonmutating(H, F), arnoldi_ws; nev=nsaves, tol=1e-5, restarts=200, which=:LM) # linmap allocates as no inplace ldiv! exists for the object returned by sparse lu :(
             E[:, iqx, iqy] .= inv.(S.eigenvalues) .+ E_target
         end
     end

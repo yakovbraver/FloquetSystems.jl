@@ -175,6 +175,7 @@ E = load("omega$(ω)_sf$(subfactor)_ns$(n_spatial_harmonics)_nf$(n_floquet_harmo
 Ωₚ = 1000
 Γ = 1000
 
+# dispersion for specific 𝑞's
 fh = GaugeFields.FullHamiltonian(ϵ, ϵc, χ, Ωₚ, Γ; n_harmonics=100);
 n_q = 64
 L = 2π
@@ -185,10 +186,11 @@ qys = [0]
 scatter(qxs, real.(S[:, :, 1]'), c=1, markerstrokewidth=0, legend=false, markersize=2)
 scatter(qxs, imag.(S[:, :, 1]'), c=1, markerstrokewidth=0, legend=false, markersize=2)
 
+# dispersion of the lowest band for the whole BZ
 fh = GaugeFields.FullHamiltonian(ϵ, ϵc, χ, Ωₚ, Γ; n_harmonics=30);
 n_q = 10
 @time S = spectrum(fh, n_q; nsaves=20)
 E = S[1, :, :]
 E2 = reverse(E, dims=2); E3 = reverse(E2, dims=1); E4 = reverse(E, dims=1); E_full = [E3 E4; E2 E] # not entirely correct because central axes are contained twice
 surface(E_full, c=CMAP)
-heatmap(E_full, c=CMAP, clims=(1.9, 2.2))
+heatmap(real.(E_full), c=CMAP, clims=(1.9, 2.2))
