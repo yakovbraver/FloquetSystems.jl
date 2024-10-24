@@ -1,6 +1,6 @@
 module GaugeFields
 
-using FFTW, SparseArrays, FastLapackInterface, FLoops, ArnoldiMethod, LinearMaps, LDLFactorizations
+using FFTW, SparseArrays, FastLapackInterface, FLoops, ArnoldiMethod, LinearMaps, LDLFactorizations, LinearSolve
 using LinearAlgebra: BLAS, LAPACK, eigvals, Hermitian, diagind, eigen, lu, lu!
 
 export GaugeField,
@@ -488,7 +488,7 @@ struct FullHamiltonian{Float<:AbstractFloat}
     Γ::Float
     δ::Tuple{Float,Float} # shift (δ𝑥, δ𝑦)
     M::Int # j_x and j_y indices will run from -M to M
-    H::SparseMatrixCSC{Complex{Float}, Int32}
+    H::SparseMatrixCSC{Complex{Float}, Int}
 end
 
 """
@@ -508,8 +508,8 @@ The resulting Hamiltonian will be 3(2M+1)² × 3(2M+1)².
 function constructFullH(ϵ::Float, ϵc::Real, χ::Real, Ωₚ::Real, δ::Tuple{<:Real,<:Real}, M::Integer) where {Float<:AbstractFloat}
     n_diag = (2M+1)^2 # number of diagonal elements in each of the nine blocks of the full 𝐻
     n_elem = 8(2M)^2 + 5n_diag
-    H_rows = Vector{Int32}(undef, n_elem)
-    H_cols = Vector{Int32}(undef, n_elem)
+    H_rows = Vector{Int}(undef, n_elem)
+    H_cols = Vector{Int}(undef, n_elem)
     H_vals = Vector{Complex{Float}}(undef, n_elem)
 
     ### place Ω₁. NOTE: we assume Hamiltonian contains Ω, not Ω/2
@@ -617,16 +617,16 @@ function spectrum(fh::FullHamiltonian{Float}, qxs::AbstractVector{<:Real}, qys::
     krylovdim = max(20, 2nsaves)
     H_v = nonzeros(fh.H)
     diagidx = findall(==(Inf), H_v) # find indices of diagonal elements -- we saved Inf's there (see `constructH`)
-    H_v[diagidx] .= 1 # otherwise initial `lu` fails (because of Inf's). Would be better to do this for the local copy of `fh.H` in the `@init` block, but `.=` assignment is not allowed there
 
     L = 2π
     @floop for (iqx, qx) in enumerate(qxs)
         @init begin
-            H = copy(fh.H)
-            H_vals = nonzeros(H)
+            prob = LinearProblem(copy(fh.H), similar(fh.H, size(fh.H, 1)))  # a copy of fh.H will be stored in `linsolve`
+            linsolve = init(prob, LinearSolve.UMFPACKFactorization())
+            linmap = LinSolveLinMap{ComplexF64, typeof(linsolve)}(linsolve, size(fh.H))
+            H_vals = nonzeros(linsolve.A)
             diagonal = Vector{Cmplx}(undef, blocksize) # 𝑞-dependent diagonal of each diagonal block
-            F = lu(H) # just to allocate `F`
-            arnoldi_ws = ArnoldiWorkspace(Cmplx, size(H, 1), krylovdim)
+            arnoldi_ws = ArnoldiWorkspace(Cmplx, size(fh.H, 1), krylovdim)
         end
         for (iqy, qy) in enumerate(qys)
             for (j, jx) in enumerate(-fh.M:fh.M), (i, jy) in enumerate(-fh.M:fh.M)
@@ -635,16 +635,28 @@ function spectrum(fh::FullHamiltonian{Float}, qxs::AbstractVector{<:Real}, qys::
             for r_b in 1:3
                 H_vals[diagidx[(r_b-1)blocksize+1:r_b*blocksize]] .= diagonal .- (r_b == 3) * im*fh.Γ
             end
-            lu!(F, H)
-            S, = partialschur!(make_linmap_nonmutating(H, F), arnoldi_ws; nev=nsaves, tol=1e-5, restarts=200, which=:LM) # linmap allocates as no inplace ldiv! exists for the object returned by sparse lu :(
+            linsolve.A = linsolve.A # informs `linsolve` that its `A` has been changed. This triggers re-factorization
+            S, = partialschur!(linmap, arnoldi_ws; nev=nsaves, tol=1e-5, restarts=200, which=:LM) # linmap allocates as no inplace ldiv! exists for the object returned by sparse lu :(
             E[:, iqx, iqy] .= inv.(S.eigenvalues) .+ E_target
         end
     end
     
-    H_v[diagidx] .= Inf # restore
     nthreads > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
     
     return E
+end
+
+"A linear map holding a `LinearSolve` object."
+struct LinSolveLinMap{T,L} <: LinearMaps.LinearMap{T}
+    linsolve::L
+    size::Dims{2}
+end
+
+Base.size(lm::LinSolveLinMap) = lm.size
+
+function LinearMaps._unsafe_mul!(y, lm::LinSolveLinMap, x::AbstractVector)
+    lm.linsolve.b .= x
+    y .= LinearSolve.solve!(lm.linsolve).u
 end
 
 end
