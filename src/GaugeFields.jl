@@ -594,6 +594,7 @@ function spectrum(fh::FullHamiltonian{Float}, n_q::Integer; E_target::Real=2, ns
         end
     end
     
+    H_v[diagidx] .= Inf # restore
     nthreads > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
     
     return E
@@ -616,7 +617,7 @@ function spectrum(fh::FullHamiltonian{Float}, qxs::AbstractVector{<:Real}, qys::
     krylovdim = max(20, 2nsaves)
     H_v = nonzeros(fh.H)
     diagidx = findall(==(Inf), H_v) # find indices of diagonal elements -- we saved Inf's there (see `constructH`)
-    H_v[diagidx] .= 1 # otherwise initial `lu` fails (because of Inf's)
+    H_v[diagidx] .= 1 # otherwise initial `lu` fails (because of Inf's). Would be better to do this for the local copy of `fh.H` in the `@init` block, but `.=` assignment is not allowed there
 
     L = 2π
     @floop for (iqx, qx) in enumerate(qxs)
@@ -640,6 +641,7 @@ function spectrum(fh::FullHamiltonian{Float}, qxs::AbstractVector{<:Real}, qys::
         end
     end
     
+    H_v[diagidx] .= Inf # restore
     nthreads > 1 && BLAS.set_num_threads(nblas) # restore original number of threads
     
     return E
