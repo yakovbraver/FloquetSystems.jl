@@ -567,18 +567,18 @@ function spectrum(fh::FullHamiltonian{Float}, n_q::Integer; E_target::Real=2, ns
 
     krylovdim = max(20, 2nsaves)
     H_v = nonzeros(fh.H)
-    diagidx = findall(==(Inf), H_v) # find indices of diagonal elements -- we saved Inf's there (see `constructH`)
-    H_v[diagidx] .= 1 # otherwise initial `lu` fails (because of Inf's)
+    diagidx = findall(==(Inf), H_v) # find indices of diagonal elements -- we saved Inf's there (see `constructFullH`)
 
     L = 2π
     qs = range(0, (2π/L)/2, length=n_q)
     @floop for (iqx, qx) in enumerate(qs)
         @init begin
-            H = copy(fh.H)
-            H_vals = nonzeros(H)
+            prob = LinearProblem(copy(fh.H), similar(fh.H, size(fh.H, 1)))  # a copy of fh.H will be stored in `linsolve`
+            linsolve = init(prob, LinearSolve.UMFPACKFactorization())
+            linmap = LinSolveLinMap{ComplexF64, typeof(linsolve)}(linsolve, size(fh.H))
+            H_vals = nonzeros(linsolve.A)
             diagonal = Vector{Cmplx}(undef, blocksize) # 𝑞-dependent diagonal of each diagonal block
-            F = lu(H) # just to allocate `F`
-            arnoldi_ws = ArnoldiWorkspace(Cmplx, size(H, 1), krylovdim)
+            arnoldi_ws = ArnoldiWorkspace(Cmplx, size(fh.H, 1), krylovdim)
         end
         for iqy in iqx:n_q
             qy = qs[iqy]
@@ -588,8 +588,8 @@ function spectrum(fh::FullHamiltonian{Float}, n_q::Integer; E_target::Real=2, ns
             for r_b in 1:3
                 H_vals[diagidx[(r_b-1)blocksize+1:r_b*blocksize]] .= diagonal .- (r_b == 3) * im*fh.Γ
             end
-            lu!(F, H)
-            S, = partialschur!(make_linmap_nonmutating(H, F), arnoldi_ws; nev=nsaves, tol=1e-5, restarts=100, which=:LM) # linmap allocates as no inplace ldiv! exists for the object returned by sparse lu :(
+            linsolve.A = linsolve.A # inform `linsolve` that its `A` has been changed. This triggers re-factorization
+            S, = partialschur!(linmap, arnoldi_ws; nev=nsaves, tol=1e-5, restarts=200, which=:LM)
             E[:, iqx, iqy] .= E[:, iqy, iqx] .= inv.(S.eigenvalues) .+ E_target
         end
     end
@@ -616,7 +616,7 @@ function spectrum(fh::FullHamiltonian{Float}, qxs::AbstractVector{<:Real}, qys::
 
     krylovdim = max(20, 2nsaves)
     H_v = nonzeros(fh.H)
-    diagidx = findall(==(Inf), H_v) # find indices of diagonal elements -- we saved Inf's there (see `constructH`)
+    diagidx = findall(==(Inf), H_v) # find indices of diagonal elements -- we saved Inf's there (see `constructFullH`)
 
     L = 2π
     @floop for (iqx, qx) in enumerate(qxs)
@@ -635,8 +635,8 @@ function spectrum(fh::FullHamiltonian{Float}, qxs::AbstractVector{<:Real}, qys::
             for r_b in 1:3
                 H_vals[diagidx[(r_b-1)blocksize+1:r_b*blocksize]] .= diagonal .- (r_b == 3) * im*fh.Γ
             end
-            linsolve.A = linsolve.A # informs `linsolve` that its `A` has been changed. This triggers re-factorization
-            S, = partialschur!(linmap, arnoldi_ws; nev=nsaves, tol=1e-5, restarts=200, which=:LM) # linmap allocates as no inplace ldiv! exists for the object returned by sparse lu :(
+            linsolve.A = linsolve.A # inform `linsolve` that its `A` has been changed. This triggers re-factorization
+            S, = partialschur!(linmap, arnoldi_ws; nev=nsaves, tol=1e-5, restarts=200, which=:LM)
             E[:, iqx, iqy] .= inv.(S.eigenvalues) .+ E_target
         end
     end
@@ -655,8 +655,8 @@ end
 Base.size(lm::LinSolveLinMap) = lm.size
 
 function LinearMaps._unsafe_mul!(y, lm::LinSolveLinMap, x::AbstractVector)
-    lm.linsolve.b .= x
-    y .= LinearSolve.solve!(lm.linsolve).u
+    copy!(lm.linsolve.b, x)
+    @time copy!(y, LinearSolve.solve!(lm.linsolve).u) # `solve!` allocates up to 50 KiB :(
 end
 
 end
